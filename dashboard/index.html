@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Superior Agents Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <h1 class="dashboard-title">
+                    <span class="title-icon">🎯</span>
+                    Superior Agents Dashboard
+                </h1>
+                <div class="header-info">
+                    <span class="status-indicator" id="connection-status">
+                        <span class="status-dot"></span>
+                        Connecting...
+                    </span>
+                    <span class="last-updated" id="last-updated">
+                        Last updated: --
+                    </span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Content -->
+        <main class="dashboard-main">
+            <!-- Status Container -->
+            <section class="dashboard-section" id="status-container">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="section-icon">📊</span>
+                        Agent Status
+                    </h2>
+                    <button class="refresh-btn" onclick="refreshData()" title="Refresh Data">
+                        <span class="refresh-icon">🔄</span>
+                    </button>
+                </div>
+                <div class="status-grid">
+                    <div class="status-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Agent Status</h3>
+                            <span class="card-icon">🤖</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="status-value" id="agent-status">--</div>
+                            <div class="status-detail" id="agent-details">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Wallet Balance</h3>
+                            <span class="card-icon">💰</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="status-value" id="wallet-balance">--</div>
+                            <div class="status-detail" id="wallet-details">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Active Sessions</h3>
+                            <span class="card-icon">🔄</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="status-value" id="session-count">--</div>
+                            <div class="status-detail" id="session-details">Loading...</div>
+                        </div>
+                    </div>
+                    <div class="status-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Database Status</h3>
+                            <span class="card-icon">🗄️</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="status-value" id="database-status">--</div>
+                            <div class="status-detail" id="database-details">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Summary Container -->
+            <section class="dashboard-section" id="summary-container">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="section-icon">📈</span>
+                        Performance Summary
+                    </h2>
+                    <div class="summary-filters">
+                        <select id="period-filter" onchange="updateSummaryPeriod()">
+                            <option value="7">Last 7 Days</option>
+                            <option value="30" selected>Last 30 Days</option>
+                            <option value="90">Last 90 Days</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="summary-grid">
+                    <div class="summary-card highlight">
+                        <div class="card-header">
+                            <h3 class="card-title">Total Bets</h3>
+                            <span class="card-icon">🎲</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="summary-value" id="total-bets">--</div>
+                            <div class="summary-change" id="total-bets-change">--</div>
+                        </div>
+                    </div>
+                    <div class="summary-card success">
+                        <div class="card-header">
+                            <h3 class="card-title">Win Rate</h3>
+                            <span class="card-icon">🏆</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="summary-value" id="win-rate">--%</div>
+                            <div class="summary-breakdown">
+                                <span class="wins" id="wins-count">0 wins</span>
+                                <span class="losses" id="losses-count">0 losses</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="summary-card">
+                        <div class="card-header">
+                            <h3 class="card-title">Total Wagered</h3>
+                            <span class="card-icon">💸</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="summary-value" id="total-wagered">$--</div>
+                            <div class="summary-detail" id="wagered-details">--</div>
+                        </div>
+                    </div>
+                    <div class="summary-card pnl">
+                        <div class="card-header">
+                            <h3 class="card-title">Net P&L</h3>
+                            <span class="card-icon">📊</span>
+                        </div>
+                        <div class="card-content">
+                            <div class="summary-value pnl-value" id="net-pnl">$--</div>
+                            <div class="summary-breakdown">
+                                <span class="winnings" id="total-winnings">$0 won</span>
+                                <span class="losses-amount" id="total-losses">$0 lost</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Agent Recommendations Container -->
+            <section class="dashboard-section" id="recommendations-container">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="section-icon">🧠</span>
+                        Agent Recommendations
+                    </h2>
+                    <div class="recommendations-controls">
+                        <div class="view-toggle">
+                            <button id="current-view-btn" class="toggle-btn active" onclick="switchView('current')">Single Bets</button>
+                            <button id="cycles-view-btn" class="toggle-btn" onclick="switchView('cycles')">By Cycles</button>
+                            <button id="combos-view-btn" class="toggle-btn" onclick="switchView('combos')">🎫 Combos</button>
+                        </div>
+                        <button class="refresh-btn" onclick="refreshRecommendations()" title="Refresh Recommendations">
+                            <span class="refresh-icon">🔄</span>
+                        </button>
+                        <span class="recommendations-count" id="recommendations-count">0 pending</span>
+                    </div>
+                </div>
+                <div class="recommendations-grid" id="recommendations-grid">
+                    <div class="loading-card">
+                        <div class="loading-spinner"></div>
+                        <p>Loading agent recommendations...</p>
+                    </div>
+                </div>
+                <div class="cycles-container" id="cycles-container" style="display: none;">
+                    <div class="cycles-grid" id="cycles-grid">
+                        <div class="loading-card">
+                            <div class="loading-spinner"></div>
+                            <p>Loading cycles data...</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="combos-container" id="combos-container" style="display: none;">
+                    <div class="combos-grid" id="combos-grid">
+                        <div class="loading-card">
+                            <div class="loading-spinner"></div>
+                            <p>Loading combo recommendations...</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Chart Container -->
+            <section class="dashboard-section chart-section">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="section-icon">📈</span>
+                        P&L Trend
+                    </h2>
+                    <div class="chart-controls">
+                        <button class="chart-btn active" onclick="switchChart('pnl')">P&L</button>
+                        <button class="chart-btn" onclick="switchChart('winrate')">Win Rate</button>
+                        <button class="chart-btn" onclick="switchChart('volume')">Volume</button>
+                    </div>
+                </div>
+                <div class="chart-container">
+                    <canvas id="pnl-chart"></canvas>
+                </div>
+            </section>
+
+            <!-- Bets Table Container -->
+            <section class="dashboard-section">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="section-icon">📋</span>
+                        Recent Betting Activity
+                    </h2>
+                    <div class="table-controls">
+                        <input type="text" id="search-bets" placeholder="Search bets..." class="search-input">
+                        <select id="status-filter" onchange="filterBets()">
+                            <option value="all">All Status</option>
+                            <option value="pending">Pending</option>
+                            <option value="won">Won</option>
+                            <option value="lost">Lost</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="table-container">
+                    <table id="bets-table" class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>Market</th>
+                                <th>Amount</th>
+                                <th>Odds</th>
+                                <th>Status</th>
+                                <th>P&L</th>
+                                <th>Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bets-tbody">
+                            <tr class="loading-row">
+                                <td colspan="7" class="loading-cell">
+                                    <div class="loading-spinner"></div>
+                                    Loading betting data...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="dashboard-footer">
+            <div class="footer-content">
+                <p class="footer-text">
+                    Superior Agents Dashboard v1.0 | 
+                    <span id="api-status">API Status: Checking...</span>
+                </p>
+                <div class="footer-links">
+                    <a href="#" onclick="showApiDocs()" class="footer-link">API Docs</a>
+                    <a href="#" onclick="downloadData()" class="footer-link">Export Data</a>
+                    <a href="#" onclick="showSettings()" class="footer-link">Settings</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="loading-content">
+            <div class="loading-spinner large"></div>
+            <p>Loading Dashboard...</p>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div id="error-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Connection Error</h3>
+                <button class="modal-close" onclick="closeErrorModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="error-message">Unable to connect to the API server.</p>
+                <div class="error-actions">
+                    <button class="btn-primary" onclick="retryConnection()">Retry</button>
+                    <button class="btn-secondary" onclick="closeErrorModal()">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 🎯 PROFESSIONAL EXECUTION CENTER -->
+    <div id="execution-overlay" class="execution-overlay" style="display: none;">
+        <div class="execution-center">
+            <div class="execution-header">
+                <h2>🎯 Professional Execution Center</h2>
+                <button class="close-btn" onclick="closeExecutionCenter()">✕</button>
+            </div>
+            
+            <div class="execution-status">
+                <div class="status-item">
+                    <span class="status-label">Agent Status:</span>
+                    <span id="agent-exec-status" class="status-value">⏳ Loading...</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Synchronization:</span>
+                    <span id="sync-exec-status" class="status-value">🔗 Ready</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Pending Actions:</span>
+                    <span id="pending-count" class="status-value">0</span>
+                </div>
+            </div>
+            
+            <div id="execution-queue" class="execution-queue">
+                <!-- Agent recommendations will appear here -->
+            </div>
+            
+            <div class="execution-controls">
+                <button id="execute-all-btn" class="btn-execute-all" disabled>
+                    🚀 Execute All Recommendations
+                </button>
+                <button id="refresh-recommendations-btn" class="btn-refresh">
+                    🔄 Refresh Agent Recommendations
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quick Execution Button -->
+    <div style="position: fixed; bottom: 20px; right: 20px; z-index: 999;">
+        <button onclick="showTodaysRecommendations()" style="
+            width: 60px; height: 60px; border-radius: 50%; 
+            background: linear-gradient(135deg, #4A90E2, #42a5f5); 
+            color: white; border: none; font-size: 24px; 
+            box-shadow: 0 6px 20px rgba(74, 144, 226, 0.4); 
+            cursor: pointer; transition: all 0.3s ease;
+        " onmouseover="this.style.transform='scale(1.1)'" onmouseout="this.style.transform='scale(1)'">
+            🎯
+        </button>
+    </div>
+
+    <!-- Execution Popup -->
+    <div id="execution-popup" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; overflow-y: auto;">
+        <div style="background: white; margin: 50px auto; max-width: 800px; border-radius: 12px; padding: 20px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h2 style="margin: 0; color: #4A90E2;">🎯 Today's Recommendations</h2>
+                <button onclick="closeExecutionPopup()" style="background: #dc3545; color: white; border: none; border-radius: 50%; width: 30px; height: 30px; cursor: pointer;">✕</button>
+            </div>
+            <div id="execution-content">Loading recommendations...</div>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>

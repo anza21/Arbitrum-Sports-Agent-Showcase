@@ -1,0 +1,72 @@
+# docker-compose.yml
+
+services:
+  superior-agent-v1:
+    build:
+      context: ../../
+      dockerfile: agent/docker/Dockerfile
+    container_name: betting_agent_main
+    user: root
+    volumes:
+      - ../../:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    env_file:
+      - ../../agent/.env
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    command: python -u /app/agent/scripts/run_betting_agent.py
+    restart: unless-stopped
+    networks:
+      - agent-net
+
+  rag-api:
+    build:
+      context: ../../
+      dockerfile: rag-api/Dockerfile
+    container_name: betting_agent_rag_api
+    ports:
+      - "32771:32771"
+    env_file:
+      - ../../rag-api/.env
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:32771/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - agent-net
+
+  dashboard-api:
+    build:
+      context: ../../
+      dockerfile: dashboard/Dockerfile
+    container_name: betting_agent_dashboard_api
+    volumes:
+      - ../../dashboard:/app/dashboard
+      - ../../agent/db:/app/agent/db
+    env_file:
+      - ../../agent/.env
+    environment:
+      - SQLITE_PATH=/app/agent/db/superior-agents.db
+    depends_on:
+      rag-api:
+        condition: service_healthy
+    networks:
+      - agent-net
+
+  dashboard-frontend:
+    build:
+      context: ../../
+      dockerfile: dashboard/client/Dockerfile.prod
+    container_name: betting_agent_frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - dashboard-api
+    networks:
+      - agent-net
+
+networks:
+  agent-net:
+    driver: bridge

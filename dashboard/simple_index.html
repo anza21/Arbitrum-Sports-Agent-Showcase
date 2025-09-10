@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Superior Agents Dashboard - Simple</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .card { background: white; padding: 20px; margin: 10px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .success { background: lightgreen; }
+        .error { background: lightcoral; }
+        .warning { background: lightyellow; }
+        .game { border: 1px solid #ccc; margin: 10px 0; padding: 15px; background: #f9f9f9; }
+        button { background: #007bff; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; margin: 5px; }
+        button:hover { background: #0056b3; }
+        .debug { font-family: monospace; font-size: 12px; color: #666; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Superior Agents Dashboard</h1>
+        
+        <div class="card">
+            <h2>🔧 Debug Information</h2>
+            <p id="debug-info">Loading...</p>
+        </div>
+
+        <div class="card">
+            <h2>💰 Wallet Balance</h2>
+            <div id="wallet-info">Loading...</div>
+        </div>
+
+        <div class="card">
+            <h2>🎲 Agent Recommendations</h2>
+            <div id="recommendations-info">Loading...</div>
+        </div>
+
+        <div class="card">
+            <h2>🤖 Agent Status</h2>
+            <div id="status-info">Loading...</div>
+        </div>
+    </div>
+
+    <script>
+        console.log('🚀 Simple Dashboard starting...');
+        
+        async function loadData() {
+            const debugDiv = document.getElementById('debug-info');
+            debugDiv.innerHTML = 'Starting data load...';
+            
+            try {
+                // Test basic connectivity
+                debugDiv.innerHTML += '<br>Testing /api/health...';
+                const healthResponse = await fetch('/api/health');
+                console.log('Health response:', healthResponse.status);
+                
+                if (healthResponse.ok) {
+                    debugDiv.innerHTML += '<br>✅ Health API: OK';
+                } else {
+                    debugDiv.innerHTML += '<br>❌ Health API: FAILED';
+                }
+
+                // Test status API
+                debugDiv.innerHTML += '<br>Testing /api/status...';
+                const statusResponse = await fetch('/api/status');
+                console.log('Status response:', statusResponse.status);
+                
+                if (statusResponse.ok) {
+                    const statusData = await statusResponse.json();
+                    console.log('Status data:', statusData);
+                    
+                    document.getElementById('status-info').innerHTML = `
+                        <div class="success">
+                            <strong>Agent Status:</strong> ${statusData.agent_status}<br>
+                            <strong>Database:</strong> ${statusData.database_available ? 'Available' : 'Not Available'}
+                        </div>
+                    `;
+                    
+                    if (statusData.wallet_info) {
+                        document.getElementById('wallet-info').innerHTML = `
+                            <div class="success">
+                                <strong>ETH Balance:</strong> ${statusData.wallet_info.eth_balance?.toFixed(6) || 0} ETH<br>
+                                <strong>USDC.e Balance:</strong> ${statusData.wallet_info.usdc_balance?.toFixed(2) || 0} USDC.e<br>
+                                <strong>Total Value:</strong> $${statusData.wallet_info.total_value_usd?.toFixed(2) || 0}
+                            </div>
+                        `;
+                    }
+                    
+                    debugDiv.innerHTML += '<br>✅ Status API: OK';
+                } else {
+                    debugDiv.innerHTML += '<br>❌ Status API: FAILED';
+                }
+
+                // Test recommendations API
+                debugDiv.innerHTML += '<br>Testing /api/recommendations...';
+                const recResponse = await fetch('/api/recommendations');
+                console.log('Recommendations response:', recResponse.status);
+                
+                if (recResponse.ok) {
+                    const recData = await recResponse.json();
+                    console.log('Recommendations data:', recData);
+                    
+                    if (recData.status === 'success' && recData.recommendations) {
+                        let gamesHtml = `<div class="success"><h3>✅ Found ${recData.recommendations.length} games:</h3>`;
+                        
+                        recData.recommendations.forEach(rec => {
+                            gamesHtml += `
+                                <div class="game">
+                                    <strong>${rec.teams}</strong><br>
+                                    Amount: $${rec.recommended_amount}<br>
+                                    Position: ${rec.position_name}<br>
+                                    Confidence: ${rec.confidence_score}<br>
+                                    <button onclick="window.open('https://www.overtimemarkets.xyz/markets/${rec.market_id}', '_blank')">
+                                        🎯 Place Bet
+                                    </button>
+                                </div>
+                            `;
+                        });
+                        
+                        gamesHtml += '</div>';
+                        document.getElementById('recommendations-info').innerHTML = gamesHtml;
+                        debugDiv.innerHTML += '<br>✅ Recommendations API: OK';
+                    } else {
+                        document.getElementById('recommendations-info').innerHTML = `
+                            <div class="error">❌ No recommendations found</div>
+                        `;
+                        debugDiv.innerHTML += '<br>⚠️ Recommendations API: No data';
+                    }
+                } else {
+                    debugDiv.innerHTML += '<br>❌ Recommendations API: FAILED';
+                }
+
+            } catch (error) {
+                console.error('Error:', error);
+                debugDiv.innerHTML += `<br>❌ CRITICAL ERROR: ${error.message}`;
+            }
+        }
+
+        // Load data when page loads
+        document.addEventListener('DOMContentLoaded', loadData);
+        
+        // Auto-refresh every 30 seconds
+        setInterval(loadData, 30000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+#1 [internal] load local bake definitions
+#1 reading from stdin 806B done
+#1 DONE 0.0s
+
+#2 [superior-agent-v1 internal] load build definition from Dockerfile
+#2 transferring dockerfile: 915B done
+#2 DONE 0.0s
+
+#3 [rag-api internal] load build definition from Dockerfile
+#3 transferring dockerfile: 638B done
+#3 DONE 0.0s
+
+#4 [auth] library/python:pull token for registry-1.docker.io
+#4 DONE 0.0s
+
+#5 [rag-api internal] load metadata for docker.io/library/python:3.10-slim

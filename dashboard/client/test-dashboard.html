@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Superior Agents Professional Dashboard</title>
+    <style>
+        .dashboard-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 1rem;
+            min-height: 100vh;
+            background-color: #f5f5f5;
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            border-radius: 10px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 2.5rem;
+            font-weight: 600;
+            text-align: center;
+        }
+
+        main {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        main > div {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 10px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e0e0e0;
+        }
+
+        main > div h2 {
+            margin: 0 0 1rem 0;
+            color: #333;
+            font-size: 1.5rem;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 0.5rem;
+        }
+
+        /* Recommendations Styling */
+        .recommendations-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); 
+            gap: 20px; 
+        }
+
+        .recommendation-card { 
+            border: 1px solid #ddd; 
+            padding: 15px; 
+            border-radius: 8px; 
+            background: #f9f9f9; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+            transition: opacity 0.3s ease; 
+        }
+
+        .recommendation-card.executed { 
+            opacity: 0.5; 
+            background: #e9ecef; 
+            border-color: #ced4da; 
+        }
+
+        .recommendation-card h4 { 
+            margin-top: 0; 
+        }
+
+        .rec-details { 
+            display: flex; 
+            justify-content: space-between; 
+            margin: 10px 0; 
+            font-size: 0.9em; 
+            color: #555; 
+        }
+
+        .recommendation-card button { 
+            background: #28a745; 
+            color: white; 
+            border: none; 
+            padding: 10px; 
+            border-radius: 5px; 
+            width: 100%; 
+            cursor: pointer; 
+            margin-top: 10px; 
+        }
+
+        .recommendation-card button:hover { 
+            background: #218838; 
+        }
+
+        .recommendation-card button:disabled { 
+            background: #6c757d; 
+            cursor: not-allowed; 
+        }
+
+        /* Bets Table Styling */
+        .bets-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-top: 20px; 
+        }
+
+        .bets-table th, .bets-table td { 
+            padding: 12px; 
+            text-align: left; 
+            border-bottom: 1px solid #ddd; 
+        }
+
+        .bets-table th { 
+            background-color: #f2f2f2; 
+        }
+
+        .status-badge { 
+            padding: 5px 10px; 
+            border-radius: 12px; 
+            font-size: 0.8em; 
+            color: white; 
+        }
+
+        .status-badge.pending_manual_execution { 
+            background-color: #ffc107; 
+            color: black; 
+        }
+
+        .status-badge.manually_executed { 
+            background-color: #28a745; 
+        }
+
+        .clickable-row:hover { 
+            background-color: #f0f8ff; 
+            cursor: pointer; 
+        }
+
+        .modal { 
+            position: fixed; 
+            z-index: 100; 
+            left: 0; 
+            top: 0; 
+            width: 100%; 
+            height: 100%; 
+            overflow: auto; 
+            background-color: rgba(0,0,0,0.4); 
+        }
+
+        .modal-content { 
+            background-color: #fefefe; 
+            margin: 15% auto; 
+            padding: 20px; 
+            border: 1px solid #888; 
+            width: 80%; 
+            max-width: 600px; 
+            border-radius: 8px; 
+        }
+
+        .close { 
+            color: #aaa; 
+            float: right; 
+            font-size: 28px; 
+            font-weight: bold; 
+        }
+
+        .close:hover, .close:focus { 
+            color: black; 
+            text-decoration: none; 
+            cursor: pointer; 
+        }
+
+        .recommendations-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 20px; 
+        }
+
+        .view-toggle button { 
+            background: #e9ecef; 
+            border: 1px solid #dee2e6; 
+            padding: 8px 16px; 
+            cursor: pointer; 
+            border-radius: 5px; 
+            margin-left: 5px; 
+        }
+
+        .view-toggle button.active { 
+            background: #007bff; 
+            color: white; 
+            border-color: #007bff; 
+        }
+
+        .view-placeholder { 
+            text-align: center; 
+            color: #888; 
+            padding: 40px; 
+        }
+
+        .combo-card { 
+            background: #fff; 
+            border: 1px solid #ddd; 
+            border-left: 4px solid #764ba2; 
+            border-radius: 8px; 
+            padding: 15px; 
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05); 
+            margin-bottom: 15px;
+        }
+
+        .combo-header { 
+            display: flex; 
+            justify-content: space-between; 
+            align-items: center; 
+            margin-bottom: 10px; 
+        }
+
+        .parlay-badge { 
+            background: #764ba2; 
+            color: white; 
+            padding: 4px 10px; 
+            border-radius: 12px; 
+            font-size: 0.8em; 
+            font-weight: bold; 
+        }
+
+        .combo-odds { 
+            font-size: 1.2em; 
+            font-weight: bold; 
+            color: #764ba2; 
+        }
+
+        .combo-content ul { 
+            padding-left: 20px; 
+            margin: 10px 0; 
+        }
+
+        .combo-details { 
+            display: flex; 
+            justify-content: space-between; 
+            margin-top: 15px; 
+            padding-top: 10px; 
+            border-top: 1px solid #eee; 
+            font-weight: bold; 
+        }
+
+        /* Responsive design */
+        @media (max-width: 768px) {
+            main {
+                grid-template-columns: 1fr;
+            }
+            
+            header h1 {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="dashboard-container">
+        <header>
+            <h1>Superior Agents Professional Dashboard</h1>
+        </header>
+        <main>
+            <div>
+                <h2>Agent Status</h2>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div class="status-card">
+                        <h3>Agent Status</h3>
+                        <p>Running</p>
+                    </div>
+                    <div class="status-card">
+                        <h3>Wallet Balance</h3>
+                        <p>$172.27</p>
+                        <small>ETH: 0.0523 | USDC: 45.67</small>
+                    </div>
+                    <div class="status-card">
+                        <h3>Database</h3>
+                        <p>Connected</p>
+                    </div>
+                    <div class="status-card">
+                        <h3>Last Update</h3>
+                        <p>20:55:30</p>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <div class="recommendations-header">
+                    <h2>Agent Recommendations</h2>
+                    <div class="view-toggle">
+                        <button onclick="switchView('single')" class="active" id="single-btn">Single Bets</button>
+                        <button onclick="switchView('cycles')" id="cycles-btn">By Cycles</button>
+                        <button onclick="switchView('combos')" id="combos-btn">Combos</button>
+                    </div>
+                </div>
+                <div class="recommendations-grid" id="recommendations-content">
+                    <div class="recommendation-card">
+                        <h4>Lakers vs Warriors</h4>
+                        <p><strong>Recommendation:</strong> Bet $25.50 on Lakers -5.5</p>
+                        <div class="rec-details">
+                            <span>Confidence: 78%</span>
+                            <span>Kelly: 12.5%</span>
+                        </div>
+                        <button onclick="alert('Mark as Executed clicked! (Demo)')">Mark as Executed</button>
+                    </div>
+                    <div class="recommendation-card executed">
+                        <h4>Celtics vs Heat</h4>
+                        <p><strong>Recommendation:</strong> Bet $18.75 on Over 215.5</p>
+                        <div class="rec-details">
+                            <span>Confidence: 65%</span>
+                            <span>Kelly: 8.2%</span>
+                        </div>
+                        <button disabled>✅ Executed</button>
+                    </div>
+                </div>
+            </div>
+            <div>
+                <h2>P&L Chart</h2>
+                <div style="height: 300px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-size: 1.2em;">
+                    📊 Live P&L Chart (Real Data Integration)
+                    <br><small style="font-size: 0.8em; opacity: 0.8;">Connected to /api/pnl_history endpoint</small>
+                </div>
+            </div>
+            <div>
+                <h2>Recent Betting Activity</h2>
+                <table class="bets-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Teams</th>
+                            <th>Amount</th>
+                            <th>Position</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="clickable-row" onclick="alert('Bet Deep Dive: Lakers vs Warriors\\nReasoning: Strong home court advantage\\nConfidence: 78%\\nAmount: $25.50')">
+                            <td>9/9/2025, 8:55:30 PM</td>
+                            <td>Lakers vs Warriors</td>
+                            <td>$25.50</td>
+                            <td>Home</td>
+                            <td><span class="status-badge pending_manual_execution">pending_manual_execution</span></td>
+                        </tr>
+                        <tr class="clickable-row" onclick="alert('Bet Deep Dive: Celtics vs Heat\\nReasoning: Defensive matchup favors under\\nConfidence: 65%\\nAmount: $18.75')">
+                            <td>9/9/2025, 8:45:15 PM</td>
+                            <td>Celtics vs Heat</td>
+                            <td>$18.75</td>
+                            <td>Away</td>
+                            <td><span class="status-badge manually_executed">manually_executed</span></td>
+                        </tr>
+                        <tr class="clickable-row" onclick="alert('Bet Deep Dive: Bulls vs Knicks\\nReasoning: High-scoring game expected\\nConfidence: 72%\\nAmount: $32.00')">
+                            <td>9/9/2025, 8:30:45 PM</td>
+                            <td>Bulls vs Knicks</td>
+                            <td>$32.00</td>
+                            <td>Draw</td>
+                            <td><span class="status-badge manually_executed">manually_executed</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        function switchView(view) {
+            // Remove active class from all buttons
+            document.querySelectorAll('.view-toggle button').forEach(btn => btn.classList.remove('active'));
+            
+            // Add active class to clicked button
+            document.getElementById(view + '-btn').classList.add('active');
+            
+            // Get content container
+            const content = document.getElementById('recommendations-content');
+            
+            // Switch content based on view
+            switch(view) {
+                case 'single':
+                    content.innerHTML = `
+                        <div class="recommendation-card">
+                            <h4>Lakers vs Warriors</h4>
+                            <p><strong>Recommendation:</strong> Bet $25.50 on Lakers -5.5</p>
+                            <div class="rec-details">
+                                <span>Confidence: 78%</span>
+                                <span>Kelly: 12.5%</span>
+                            </div>
+                            <button onclick="alert('Mark as Executed clicked! (Demo)')">Mark as Executed</button>
+                        </div>
+                        <div class="recommendation-card executed">
+                            <h4>Celtics vs Heat</h4>
+                            <p><strong>Recommendation:</strong> Bet $18.75 on Over 215.5</p>
+                            <div class="rec-details">
+                                <span>Confidence: 65%</span>
+                                <span>Kelly: 8.2%</span>
+                            </div>
+                            <button disabled>✅ Executed</button>
+                        </div>
+                    `;
+                    break;
+                case 'cycles':
+                    content.innerHTML = '<div class="view-placeholder">No cycle data available yet. Cycles will appear when the agent completes new analysis runs.</div>';
+                    break;
+                case 'combos':
+                    content.innerHTML = `
+                        <div class="combo-card">
+                            <div class="combo-header">
+                                <span class="parlay-badge">PARLAY</span>
+                                <span class="combo-odds">4.25x</span>
+                            </div>
+                            <div class="combo-content">
+                                <h4>Lakers vs Warriors + Celtics vs Heat</h4>
+                                <p class="combo-label">Components:</p>
+                                <ul>
+                                    <li>Lakers -5.5</li>
+                                    <li>Celtics Over 215.5</li>
+                                </ul>
+                                <div class="combo-details">
+                                    <span>Bet: $50.00</span>
+                                    <span>Profit: +$162.50</span>
+                                    <span>Confidence: 68.5%</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="combo-card">
+                            <div class="combo-header">
+                                <span class="parlay-badge">PARLAY</span>
+                                <span class="combo-odds">6.80x</span>
+                            </div>
+                            <div class="combo-content">
+                                <h4>Bulls vs Knicks + Heat vs Magic</h4>
+                                <p class="combo-label">Components:</p>
+                                <ul>
+                                    <li>Bulls +3.5</li>
+                                    <li>Heat Under 220.5</li>
+                                </ul>
+                                <div class="combo-details">
+                                    <span>Bet: $25.00</span>
+                                    <span>Profit: +$145.00</span>
+                                    <span>Confidence: 72.3%</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+            }
+        }
+    </script>
+</body>
+</html>

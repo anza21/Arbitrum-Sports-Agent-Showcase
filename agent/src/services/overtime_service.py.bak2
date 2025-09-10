@@ -1,0 +1,89 @@
+import requests
+import json
+import os
+
+class OvertimeService:
+    """
+    A service to interact with the Overtime Protocol API v2.
+    Handles fetching sports, markets, and placing bets.
+    """
+    API_BASE_URL = "https://api.overtime.io"
+
+    def __init__(self):
+        print("Overtime Service Initialized.")
+
+    def get_sports_data(self):
+        """
+        Fetches all available sports markets from the Overtime API,
+        including the necessary API key header for authentication.
+        """
+        try:
+            api_key = os.getenv("OVERTIME_REST_API_KEY")
+            if not api_key:
+                print("Error: OVERTIME_REST_API_KEY not found in environment variables.")
+                return None
+
+            endpoint = f"{self.API_BASE_URL}/overtime-v2/networks/42161/markets"
+            headers = {
+                "x-api-key": api_key
+            }
+
+            # The network parameter is part of the URL, so params dict is not needed for this call.
+            response = requests.get(endpoint, headers=headers)
+            response.raise_for_status()  # Raises an HTTPError for bad responses
+
+            response_data = response.json()
+            
+            # Extract markets from the response structure
+            # The API returns: {"data": [{"markets": [...]}]}
+            if isinstance(response_data, dict) and "data" in response_data:
+                if isinstance(response_data["data"], list) and len(response_data["data"]) > 0:
+                    # Look for markets in the first data item
+                    first_data_item = response_data["data"][0]
+                    if isinstance(first_data_item, dict) and "markets" in first_data_item:
+                        markets = first_data_item["markets"]
+                        if isinstance(markets, list):
+                            print(f"Successfully fetched {len(markets)} markets.")
+                            return markets
+            
+            # Fallback: if the structure is different, return the raw response
+            print(f"Unexpected response structure, returning raw data with {len(response_data) if isinstance(response_data, (list, dict)) else 0} items")
+            return response_data
+            
+        except requests.exceptions.RequestException as e:
+            print(f"Error fetching markets from Overtime API: {e}")
+            return None
+
+    def get_market_result(self, market_id: str):
+        """
+        Fetches the result for a specific, resolved market.
+        """
+        api_key = os.getenv("OVERTIME_REST_API_KEY")
+        if not api_key:
+            return None
+        try:
+            # Note: The endpoint for a single market might be different. This is a placeholder.
+            # We assume a standard REST pattern.
+            endpoint = f"{self.API_BASE_URL}/overtime-v2/networks/42161/markets/{market_id}"
+            headers = {"x-api-key": api_key}
+
+            response = requests.get(endpoint, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            market_data = response.json()
+            if market_data.get('isResolved', False):
+                print(f"--- OvertimeService: Fetched result for market {market_id}. ---")
+                return {"winning_position": market_data.get("winningPosition")}
+            return None # Market is not resolved yet
+
+        except requests.exceptions.RequestException as e:
+            print(f"--- OvertimeService ERROR: Could not fetch result for market {market_id}: {e} ---")
+            return None
+
+# Example usage for testing
+if __name__ == '__main__':
+    service = OvertimeService()
+    available_markets = service.get_sports_data()
+    if available_markets:
+        # Print the first 2 markets for brevity
+        print(json.dumps(available_markets[:2], indent=2))

@@ -1,0 +1,1155 @@
+
+import re  # Required for placeholder extraction
+import json  # Required for JSON parsing
+import os  # Required for environment variables
+import time  # Required for retry delays
+from textwrap import dedent
+from typing import Dict, List, Set, Tuple, Optional
+from agent.src.db.interface import DBInterface
+
+from result import Err, Ok, Result
+
+from agent.src.genner.Base import Genner
+from agent.src.sensor.trading import TradingSensor
+from agent.src.agent_types import ChatHistory, Message
+
+from agent.src.container import ContainerManager
+from agent.src.client.rag import RAGClient
+from agent.src.services.overtime_service import OvertimeService
+from agent.src.services.news_service import NewsService
+from agent.src.services.the_odds_service import TheOddsService
+from agent.src.services.weather_service import WeatherService
+from agent.src.services.search_service import SearchService
+from agent.src.datatypes import StrategyData
+from agent.src.contracts.overtime_abi import OVERTIME_SPORTS_AMM_ABI
+from datetime import datetime
+
+
+class BettingPromptGenerator:
+	"""
+	Generator for creating prompts used in sports betting agent workflows.
+
+	This class is responsible for generating various prompts used by the betting agent,
+	including system prompts, research code prompts, strategy prompts, and betting code prompts.
+	It handles the substitution of placeholders in prompt templates with actual values.
+	"""
+
+	def __init__(self, prompts: Dict[str, str]):
+		"""
+		Initialize with custom prompts for each function.
+
+		This constructor sets up the prompt generator with either custom prompts
+		or default prompts if none are provided. It validates that all required
+		prompts are present and properly formatted.
+
+		Args:
+		    prompts (Dict[str, str]): Dictionary containing custom prompts for each function
+		"""
+		if not prompts:
+			prompts = self.get_default_prompts()
+		self._validate_prompts(prompts)
+		self.prompts = prompts
+
+	def _validate_prompts(self, prompts: Dict[str, str]) -> None:
+		"""
+		Validate prompts for required and unexpected placeholders.
+
+		This method checks that all provided prompts contain the required
+		placeholders and don't contain any unexpected ones. It ensures that
+		the prompts will work correctly when placeholders are substituted.
+
+		Args:
+		    prompts (Dict[str, str]): Dictionary of prompt name to prompt content
+
+		Raises:
+		    ValueError: If prompts are missing required placeholders or contain unexpected ones
+		"""
+		required_prompts = [
+			"system_prompt",
+			"research_code_prompt_first",
+		]
+
+		# Check all required prompts exist
+		missing_prompts = set(required_prompts) - set(prompts.keys())
+		if missing_prompts:
+			raise ValueError(f"Missing required prompts: {missing_prompts}")
+
+		# Extract placeholders using regex
+		placeholder_pattern = re.compile(r"{([^}]+)}")
+
+		# Check each prompt for missing and unexpected placeholders
+		for prompt_name, prompt_content in prompts.items():
+			if prompt_name not in required_prompts:
+				continue
+
+			# Get actual placeholders in the prompt
+			actual_placeholders = {
+				f"{{{p}}}" for p in placeholder_pattern.findall(prompt_content)
+			}
+			required_set = set()  # No placeholders required for these prompts
+
+			# Check for missing placeholders
+			missing = required_set - actual_placeholders
+			if missing:
+				raise ValueError(
+					f"Missing required placeholders in {prompt_name}: {missing}"
+				)
+
+			# Check for unexpected placeholders
+			unexpected = actual_placeholders - required_set
+			if unexpected:
+				raise ValueError(
+					f"Unexpected placeholders in {prompt_name}: {unexpected}"
+				)
+
+	def generate_system_prompt(
+		self,
+		role: str,
+		time: str,
+		metric_name: str,
+		metric_state: str,
+		network: str,
+	) -> str:
+		"""
+		Generate a system prompt for the trading agent.
+
+		This method creates a system prompt that sets the context for the agent,
+		including its role, current date, goal, and portfolio state.
+
+		Args:
+		        role (str): The role of the agent (e.g., "trader")
+		        time (str): Time frame for the trading goal
+		        metric_name (str): Name of the metric to maximize
+		        metric_state (str): Current state of the metric/portfolio
+		        network (str): Blockchain network being used
+
+		Returns:
+		        str: Formatted system prompt
+		"""
+		from datetime import datetime
+		now = datetime.now()
+		today_date = now.strftime("%Y-%m-%d")
+
+		# Parse the metric state to extract available balance
+		try:
+			metric_data = eval(metric_state)
+			if isinstance(metric_data, dict) and "eth_balance_available" in metric_data:
+				# Use available balance instead of total balance
+				metric_state = str(
+					{
+						**metric_data,
+						"eth_balance": metric_data[
+							"eth_balance_available"
+						],  # Show only available balance
+					}
+				)
+		except (ValueError, TypeError):
+			pass  # Keep original metric_state if parsing fails
+
+		return self.prompts["system_prompt"].format(
+			role=role,
+			today_date=today_date,
+			metric_name=metric_name,
+			time=time,
+			network=network,
+			metric_state=metric_state,
+		)
+
+	def generate_research_code_first_time_prompt(self, apis: List[str], network: str):
+		"""
+		Generate a prompt for the first-time research code generation.
+
+		This method creates a prompt for generating research code when the agent
+		has no prior context or history to work with.
+
+		Args:
+		        apis (List[str]): List of APIs available to the agent
+
+		Returns:
+		        str: Formatted prompt for first-time research code generation
+		"""
+		apis_str = ",\n".join(apis) if apis else self._get_default_apis_str()
+
+		return self.prompts["research_code_prompt_first"].format(
+			apis_str=apis_str, network=network
+		)
+
+	@staticmethod
+	def _get_default_apis_str() -> str:
+		"""
+		Get a string representation of default APIs.
+
+		This static method returns a comma-separated string of default APIs
+		that can be used when no specific APIs are provided.
+
+		Returns:
+		        str: Comma-separated string of default APIs
+		"""
+		default_apis = [
+			"Coingecko (env variables COINGECKO_API_KEY)",
+			"Twitter (env variables TWITTER_API_KEY, TWITTER_API_KEY_SECRET)",
+			"DuckDuckGo (using the command line `ddgr`)",
+		]
+		return ",\n".join(default_apis)
+
+	@staticmethod
+	def get_default_prompts() -> Dict[str, str]:
+		"""Get the complete set of default prompts that can be customized."""
+		return {
+			"system_prompt": dedent("""
+			You are a Specialized Sports Betting Analyst. Your sole objective is wallet profitability by placing bets on sports markets.
+			You operate on the Arbitrum One network.
+			Your primary tool for market data and placing bets is the Overtime Protocol v2.
+			Analyze available sports market data, form a betting strategy, and generate Python code to execute bets.
+			Your performance is measured by the growth of the wallet's USDC.e balance.
+			Base your decisions on data and statistical probability, not emotion.
+			
+			You now have access to enhanced data sources:
+			- Weather conditions at game locations (affects outdoor sports performance)
+			- Geographic location data for teams and venues
+			- Live odds from multiple bookmakers
+			
+			Consider weather conditions, especially for outdoor sports, as they can significantly impact game outcomes.
+			Use location data to identify regional factors that might affect team performance.
+		""").strip(),
+			"research_code_prompt_first": dedent("""
+			You have no prior knowledge of the current sports markets.
+			Your task is to write Python code to gather initial data about available games and odds from the Overtime Protocol API.
+			Focus on understanding the available markets, sports, and participants.
+			Use the provided functions to query the API and print the results in a structured format.
+			Your code must be clean, efficient, and exclusively focused on data gathering.
+		""").strip(),
+		}
+
+
+class BettingAgent:
+	"""
+	Agent responsible for executing trading strategies based on market data and notifications.
+
+	This class orchestrates the entire trading workflow, including system preparation,
+	research code generation, strategy formulation, and trading code execution.
+	It integrates with various components like RAG, database, sensors, and code execution
+	to create a complete trading agent.
+	"""
+	
+	# Strategy parameters as class attributes for global access
+	FAVORITE_ODDS_THRESHOLD = 1.5
+	NEGATIVE_NEWS_KEYWORDS = ["injury", "injured", "doubt", "missing", "loss", "bad form", "crisis"]
+
+	def __init__(
+		self,
+		agent_id: str,
+		rag: RAGClient,
+		db: DBInterface,
+		sensor: TradingSensor,
+		genner: Genner,
+		container_manager: ContainerManager,
+		news_service: NewsService,
+		wallet_service,
+		prompt_generator: BettingPromptGenerator,
+	):
+		"""
+		Initialize the betting agent with all required components.
+
+		Args:
+		    agent_id (str): Unique identifier for this agent
+		    rag (RAGClient): Client for retrieval-augmented generation
+		    db (DBInterface): Database client for storing and retrieving data
+		    sensor (TradingSensor): Sensor for monitoring betting-related metrics
+		    genner (Genner): Generator for creating code and strategies
+		    container_manager (ContainerManager): Manager for code execution in containers
+		    news_service: Service for fetching sports-related news and insights
+		    wallet_service: Service for wallet operations and blockchain interactions
+		    prompt_generator (BettingPromptGenerator): Generator for creating prompts
+		"""
+		self.agent_id = agent_id
+		self.db = db
+		self.rag = rag
+		self.sensor = sensor
+		self.genner = genner
+		self.container_manager = container_manager
+		self.news_service = news_service
+		self.wallet_service = wallet_service
+		self.prompt_generator = prompt_generator
+
+		# Initialize core framework components
+		# self.rag_client = RAGClient()  # Already passed as parameter
+		# self.container_manager = ContainerManager()  # Already passed as parameter
+		# self.db = DBInterface()  # Already passed as parameter
+
+		# Initialize Overtime Service
+		self.overtime_service = OvertimeService()
+
+		# Initialize The Odds Service
+		self.odds_service = TheOddsService(os.getenv('THE_ODDS_API_KEY')) if os.getenv('THE_ODDS_API_KEY') else None
+
+		# Initialize Weather and Search Services
+		self.weather_service = WeatherService() if os.getenv('OPENWEATHERMAP_API_KEY') else None
+		self.search_service = SearchService()
+
+		self.chat_history = ChatHistory()
+
+	def prepare_system(
+		self, role: str, time: str, metric_name: str, metric_state: str, network: str
+	) -> ChatHistory:
+		"""
+		Prepare the system prompt for the agent.
+
+		This method generates the initial system prompt that sets the context
+		for the agent's operation, including its role, time context, and metrics.
+
+		Args:
+		    role (str): The role of the agent (e.g., "trader")
+		    time (str): Current time information
+		    metric_name (str): Name of the metric to track
+		    metric_state (str): Current state of the metric
+		    network (str): Blockchain network to operate on
+
+		Returns:
+		    ChatHistory: Chat history with the system prompt
+		"""
+		ctx_ch = ChatHistory(
+			Message(
+				role="system",
+				content=self.prompt_generator.generate_system_prompt(
+					role=role,
+					time=time,
+					metric_name=metric_name,
+					network=network,
+					metric_state=metric_state,
+				),
+			)
+		)
+
+		return ctx_ch
+
+	def gen_research_code_on_first(
+		self, apis: List[str], network: str
+	) -> Tuple[Result[str, str], ChatHistory]:
+		"""
+		Generate research code for the first time.
+
+		This method creates research code when the agent has no prior context,
+		using only the available APIs.
+
+		Args:
+		    apis (List[str]): List of APIs available to the agent
+
+		Returns:
+		    Result[Tuple[str, ChatHistory], str]: Success with code and chat history,
+		        or error message
+		"""
+		ctx_ch = ChatHistory(
+			Message(
+				role="user",
+				content=self.prompt_generator.generate_research_code_first_time_prompt(
+					apis=apis,
+					network=network,
+				),
+			)
+		)
+
+		gen_result = self.genner.generate_code(self.chat_history + ctx_ch)
+		if gen_result.is_err():
+			# Return error along with chat history
+			return Err(
+				f"BettingAgent.gen_research_code_on_first, err: \n{gen_result.unwrap_err()}"
+			), ctx_ch
+
+		processed_codes, raw_response = gen_result.unwrap()
+		ctx_ch = ctx_ch.append(Message(role="assistant", content=raw_response))
+
+		if processed_codes is None or not processed_codes:
+			return Err(
+				"BettingAgent.gen_research_code_on_first: No code could be extracted."
+			), ctx_ch
+
+		return Ok(processed_codes[0]), ctx_ch
+
+	def check_and_update_pending_bets(self) -> None:
+		"""
+		Check and update the status of pending bets.
+		
+		This method queries the database for pending bets and updates their status
+		based on current market conditions and results.
+		"""
+		try:
+			print("--- Checking for pending bets to update... ---")
+			
+			# Get pending bets from database
+			pending_bets = self.db.get_pending_bets()
+			
+			if not pending_bets:
+				print("--- No pending bets found. ---")
+				return
+			
+			print(f"--- Found {len(pending_bets)} pending bets to check. ---")
+			
+			# For now, just log the pending bets
+			# In a full implementation, this would check results and update status
+			for bet in pending_bets:
+				print(f"--- Pending bet: {bet} ---")
+			
+			print("--- Pending bets check completed. ---")
+			
+		except Exception as e:
+			print(f"--- ERROR checking pending bets: {e} ---")
+
+	def get_sports_data(self) -> List[Dict]:
+		"""
+		Fetch and process sports data from OvertimeService.
+		
+		Returns:
+			List[Dict]: List of processed game data
+		"""
+		try:
+			# Get raw markets from OvertimeService
+			raw_markets = self.overtime_service.get_sports_data()
+			
+			if not raw_markets:
+				print("No markets available from OvertimeService")
+				return []
+			
+			# Process the raw market data
+			processed_games = []
+			
+			# Handle different response formats - iterate through values() for dict responses
+			if isinstance(raw_markets, dict):
+				# If it's a dict with categories, iterate through values()
+				for markets in raw_markets.values():
+					if isinstance(markets, list):
+						for market in markets:
+							if self._is_valid_market(market):
+								processed_game = self._process_market(market)
+								if processed_game:
+									processed_games.append(processed_game)
+			elif isinstance(raw_markets, list):
+				# If it's a direct list of markets
+				for market in raw_markets:
+					if self._is_valid_market(market):
+						processed_game = self._process_market(market)
+						if processed_game:
+							processed_games.append(processed_game)
+			
+			print(f"--- Successfully processed {len(processed_games)} valid games from Overtime API ---")
+			return processed_games
+			
+		except Exception as e:
+			print(f"Error fetching sports data: {e}")
+			return []
+
+	def _is_valid_market(self, market: Dict) -> bool:
+		"""
+		Check if a market is valid and active for processing.
+		
+		Args:
+			market (Dict): Market data to validate
+			
+		Returns:
+			bool: True if market is valid and active
+		"""
+		# Check required fields exist
+		required_fields = ["gameId", "sport", "homeTeam", "awayTeam", "status"]
+		if not all(field in market for field in required_fields):
+			return False
+		
+		# Check if market is open and not paused
+		if not market.get("isOpen", False):
+			return False
+		
+		if market.get("isPaused", False):
+			return False
+		
+		# Check if odds are available and not zero
+		odds = market.get("odds", [])
+		if not odds or len(odds) < 2:
+			return False
+		
+		# Check that odds contain valid decimal values
+		for odd in odds:
+			if not isinstance(odd, dict) or "decimal" not in odd:
+				return False
+			decimal_odds = odd.get("decimal", 0)
+			if not decimal_odds or decimal_odds <= 0:
+				return False
+		
+		return True
+
+	def _process_market(self, market: Dict) -> Optional[Dict]:
+		"""
+		Process a single market into a standardized format.
+		
+		Args:
+			market (Dict): Raw market data
+			
+		Returns:
+			Optional[Dict]: Processed market data or None if invalid
+		"""
+		try:
+			# Extract basic game information
+			processed_game = {
+				"game_id": market.get("gameId"),
+				"sport": market.get("sport"),
+				"league": market.get("leagueName", "Unknown"),
+				"home_team": market.get("homeTeam"),
+				"away_team": market.get("awayTeam"),
+				"status": market.get("status"),
+				"is_open": market.get("isOpen", False),
+				"maturity_date": market.get("maturityDate"),
+				"line": market.get("line", 0),
+				"type": market.get("type", "unknown"),
+				"odds": market.get("odds", []),
+				"player_props": market.get("playerProps", {}),
+				"raw_data": market  # Keep original data for reference
+			}
+			
+			# Add odds information if available
+			if market.get("odds") and len(market["odds"]) >= 2:
+				odds = market["odds"]
+				if len(odds) >= 2:
+					processed_game["home_odds"] = odds[0].get("decimal", 0)
+					processed_game["away_odds"] = odds[1].get("decimal", 0)
+					
+					# Add additional odds validation
+					if processed_game["home_odds"] > 0 and processed_game["away_odds"] > 0:
+						processed_game["odds_valid"] = True
+					else:
+						processed_game["odds_valid"] = False
+			
+			return processed_game
+			
+		except Exception as e:
+			print(f"Error processing market {market.get('gameId', 'unknown')}: {e}")
+			return None
+
+	def manage_bankroll(self, betting_decisions: List[Dict]) -> List[Dict]:
+		"""
+		Manage bankroll allocation for betting decisions using Kelly Criterion.
+		
+		Args:
+			betting_decisions (List[Dict]): List of betting decisions
+			
+		Returns:
+			List[Dict]: Decisions with bet amounts assigned
+		"""
+		try:
+			# Get current bankroll from wallet service
+			total_bankroll = 0
+			try:
+				eth_balance = self.wallet_service.get_eth_balance()
+				usdc_balance = self.wallet_service.get_usdc_balance()
+				# Convert ETH to USDC equivalent (rough estimate)
+				total_bankroll = usdc_balance + (eth_balance * 3000)  # Assuming 1 ETH = $3000
+			except Exception as e:
+				print(f"Could not get wallet balances, using default bankroll: {e}")
+				total_bankroll = 1000  # Default $1000 bankroll
+			
+			print(f"Total bankroll available: ${total_bankroll:.2f}")
+			
+			# Calculate Kelly Criterion for each decision
+			for decision in betting_decisions:
+				# Extract odds and probability
+				odds = decision.get("odds", 0)
+				if odds <= 1:
+					odds = 2.0  # Default odds if not available
+				
+				# Calculate implied probability
+				implied_prob = 1 / odds
+				
+				# Estimate true probability (this would come from ML model in production)
+				# For now, use a simple heuristic based on Kelly percentage
+				kelly_percentage = decision.get("kelly_percentage", 5.0) / 100.0
+				
+				# Kelly Criterion formula: f = (bp - q) / b
+				# where b = odds - 1, p = true probability, q = 1 - p
+				b = odds - 1
+				p = implied_prob + kelly_percentage  # Add Kelly percentage as edge
+				q = 1 - p
+				
+				if b > 0 and p > q:
+					kelly_fraction = (b * p - q) / b
+					# Cap Kelly fraction to prevent over-betting
+					kelly_fraction = min(kelly_fraction, 0.25)  # Max 25% of bankroll
+				else:
+					kelly_fraction = 0.01  # Minimum 1% bet
+				
+				# Calculate bet amount
+				bet_amount = total_bankroll * kelly_fraction
+				
+				# Add bet amount to decision
+				decision["bet_amount"] = round(bet_amount, 2)
+				decision["kelly_fraction"] = round(kelly_fraction * 100, 2)
+				decision["bankroll_percentage"] = round((bet_amount / total_bankroll) * 100, 2)
+			
+			print(f"Bankroll management completed for {len(betting_decisions)} decisions")
+			return betting_decisions
+			
+		except Exception as e:
+			print(f"Error in bankroll management: {e}")
+			# Return decisions with default bet amounts
+			for decision in betting_decisions:
+				decision["bet_amount"] = 10.0  # Default $10 bet
+				decision["kelly_fraction"] = 1.0
+				decision["bankroll_percentage"] = 1.0
+			return betting_decisions
+
+	def save_decision_to_rag(self, decision: Dict) -> bool:
+		"""
+		Save a betting decision to RAG memory.
+		
+		Args:
+			decision (Dict): Betting decision to save
+			
+		Returns:
+			bool: True if saved successfully
+		"""
+		try:
+			# Create StrategyData from decision
+			strategy_data = StrategyData(
+				strategy_id=f"betting_{decision.get('game_id', 'unknown')}_{int(time.time())}",
+				agent_id=self.agent_id,
+				summarized_desc=f"Bet on {decision.get('home_team', 'Unknown')} vs {decision.get('away_team', 'Unknown')}",
+				full_desc=f"Betting decision: {decision.get('decision', 'Unknown')} for {decision.get('sport', 'Unknown')} game",
+				parameters={
+					"game_id": decision.get("game_id"),
+					"bet_amount": decision.get("bet_amount"),
+					"status": decision.get("status"),
+					"home_team": decision.get("home_team"),
+					"away_team": decision.get("away_team"),
+					"decision": decision.get("decision"),
+					"sport": decision.get("sport"),
+					"league": decision.get("leagueName"),
+					"odds": decision.get("moneyline_home_odds"),
+					"kelly_percentage": decision.get("kelly_percentage"),
+					"pnl": decision.get("pnl_usdce")
+				},
+				strategy_result=decision.get("status", "PENDING"),
+				created_at=datetime.now()
+			)
+			
+			# Save to RAG using save_result_batch
+			response = self.rag.save_result_batch([strategy_data])
+			
+			if response.status_code == 200:
+				print(f"Decision saved to RAG: {decision.get('game_id', 'unknown')}")
+				return True
+			else:
+				print(f"Failed to save decision to RAG: {decision.get('game_id', 'unknown')} - Status: {response.status_code}")
+				return False
+				
+		except Exception as e:
+			print(f"Error saving decision to RAG: {e}")
+			return False
+
+	def enrich_games_with_odds(self, games_data: List[Dict]) -> List[Dict]:
+		"""
+		Enrich games data with live odds from The Odds API.
+		
+		This method fetches live odds for the given games and enriches
+		the games data with current betting odds.
+		
+		Args:
+			games_data (List[Dict]): List of games to enrich with odds
+			
+		Returns:
+			List[Dict]: Enriched games data with odds information
+		"""
+		if not self.odds_service:
+			print("--- WARNING: The Odds Service not available (API key missing) ---")
+			return games_data
+		
+		try:
+			print("--- Fetching live odds from The Odds API... ---")
+			
+			# Use the new global coverage method with test mode enabled
+			all_odds = self.odds_service.get_odds_for_all_target_sports(test_mode=True)
+			
+			enriched_games = []
+			
+			for game in games_data:
+				# Extract team names for odds lookup
+				team_names = self._extract_team_names(game)
+				if team_names:
+					# Try to find matching odds from the fetched data
+					odds_data = self._find_matching_odds_from_all_sports(game, all_odds)
+					if odds_data:
+						game['odds_data'] = odds_data
+						print(f"--- Enriched game with odds: {team_names} ---")
+					else:
+						game['odds_data'] = None
+				else:
+					game['odds_data'] = None
+				
+				enriched_games.append(game)
+			
+			print(f"--- Successfully enriched {len(enriched_games)} games with odds ---")
+			return enriched_games
+			
+		except Exception as e:
+			print(f"--- ERROR enriching games with odds: {e} ---")
+			return games_data
+
+	def _extract_team_names(self, game: Dict) -> List[str]:
+		"""
+		Extract team names from game data for odds lookup.
+		
+		Args:
+			game (Dict): Game data dictionary
+			
+		Returns:
+			List[str]: List of team names
+		"""
+		team_names = []
+		
+		# Try different possible keys for team names
+		possible_keys = ['home_team', 'away_team', 'team1', 'team2', 'participants']
+		
+		for key in possible_keys:
+			if key in game:
+				value = game[key]
+				if isinstance(value, str):
+					team_names.append(value)
+				elif isinstance(value, list):
+					team_names.extend(value)
+				elif isinstance(value, dict):
+					# If it's a dict, try to extract name field
+					if 'name' in value:
+						team_names.append(value['name'])
+		
+		return team_names
+	
+	def _find_matching_odds_from_all_sports(self, game: Dict, all_odds: Dict[str, List[Dict]]) -> Optional[Dict]:
+		"""
+		Find matching odds for a game from the fetched odds data for all sports.
+		
+		Args:
+			game (Dict): Game data to match
+			all_odds (Dict): Dictionary of odds data for all sports
+			
+		Returns:
+			Optional[Dict]: Matching odds data or None
+		"""
+		game_teams = set()
+		
+		# Extract team names from game data
+		if 'home_team' in game:
+			game_teams.add(game['home_team'].lower())
+		if 'away_team' in game:
+			game_teams.add(game['away_team'].lower())
+		if 'teams' in game:
+			for team in game['teams']:
+				if isinstance(team, str):
+					game_teams.add(team.lower())
+				elif isinstance(team, dict) and 'name' in team:
+					game_teams.add(team['name'].lower())
+		
+		# Search through all sports for matching odds
+		for sport_key, odds_list in all_odds.items():
+			for odds in odds_list:
+				odds_teams = set()
+				
+				# Extract team names from odds data
+				if 'home_team' in odds:
+					odds_teams.add(odds['home_team'].lower())
+				if 'away_team' in odds:
+					odds_teams.add(odds['away_team'].lower())
+				if 'teams' in odds:
+					for team in odds['teams']:
+						if isinstance(team, str):
+							odds_teams.add(team.lower())
+						elif isinstance(team, dict) and 'name' in team:
+							odds_teams.add(team['name'].lower())
+				
+				# Check if teams match
+				if game_teams and odds_teams and game_teams.issubset(odds_teams):
+					return {
+						'sport_key': sport_key,
+						'home_odds': odds.get('home_odds'),
+						'away_odds': odds.get('away_odds'),
+						'draw_odds': odds.get('draw_odds'),
+						'last_update': odds.get('last_update'),
+						'bookmakers': odds.get('bookmakers', [])
+					}
+		
+		return None
+
+	def generate_betting_code(self, betting_decisions: List[Dict]) -> str:
+		"""
+		Generate executable Python code for placing on-chain bets.
+		
+		This method creates self-contained Python code that can execute
+		real on-chain transactions on the Arbitrum network using the
+		Overtime Protocol smart contract.
+		
+		Args:
+			betting_decisions (List[Dict]): List of betting decisions with amounts
+			
+		Returns:
+			str: Executable Python code for placing bets
+		"""
+		if not betting_decisions:
+			return "# No betting decisions to execute"
+		
+		try:
+			print("--- Generating executable betting code for on-chain transactions ---")
+			
+			# Import the ABI from the contracts module
+			abi_string = json.dumps(OVERTIME_SPORTS_AMM_ABI)
+			
+			# Start building the code
+			code_lines = [
+				"import os",
+				"import json",
+				"from web3 import Web3",
+				"",
+				"# Load ABI directly in the code",
+				f"abi = json.loads('{abi_string}')",
+				"",
+				"# Initialize Web3 connection to Arbitrum",
+				"w3 = Web3(Web3.HTTPProvider(os.getenv('ARBITRUM_RPC_URL')))",
+				"",
+				"# Check connection",
+				"if not w3.is_connected():",
+				"    raise Exception('Failed to connect to Arbitrum network')",
+				"",
+				"# Load contract",
+				"contract_address = os.getenv('OVERTIME_CONTRACT')",
+				"contract = w3.eth.contract(address=contract_address, abi=abi)",
+				"",
+				"# Get wallet details",
+				"wallet_address = os.getenv('WALLET_ADDRESS')",
+				"private_key = os.getenv('PRIVATE_KEY')",
+				"",
+				"if not wallet_address or not private_key:",
+				"    raise Exception('Missing wallet configuration')",
+				"",
+				"print(f'Connected to Arbitrum network: {{w3.eth.chain_id}}')",
+				"print(f'Wallet address: {{wallet_address}}')",
+				"print(f'Contract address: {{contract_address}}')",
+				"",
+				"# Execute betting decisions",
+				"executed_bets = []",
+				""
+			]
+			
+			# Add code for each betting decision
+			for i, decision in enumerate(betting_decisions):
+				# Clean team names to prevent syntax errors
+				home_team_safe = decision.get('home_team', 'Unknown').replace("'", "\\'")
+				away_team_safe = decision.get('away_team', 'Unknown').replace("'", "\\'")
+				
+				# Get bet amount in wei (USDC.e has 6 decimals)
+				bet_amount_usdc = decision.get('bet_amount', 0.1)  # Default $0.10
+				bet_amount_wei = int(bet_amount_usdc * 1_000_000)  # Convert to wei
+				
+				# Add the betting code for this decision
+				code_lines.extend([
+					f"# Bet {i+1}: {home_team_safe} vs {away_team_safe}",
+					f"try:",
+					f"    print(f'Placing bet {{i+1}}: {{bet_amount_usdc}} USDC.e on {{home_team_safe}} vs {{away_team_safe}}')",
+					f"    ",
+					f"    # Build transaction",
+					f"    tx = contract.functions.buyFromAMM('{{decision.get('game_id', 'unknown')}}', 0, {bet_amount_wei}).build_transaction({{",
+					f"        'from': wallet_address,",
+					f"        'nonce': w3.eth.get_transaction_count(wallet_address)",
+					f"        'gas': 500000,",
+					f"        'gasPrice': w3.eth.gas_price",
+					f"        'maxFeePerGas': w3.eth.gas_price * 2,",
+					f"        'maxPriorityFeePerGas': w3.eth.gas_price",
+					f"    }})",
+					f"    ",
+					f"    # Sign transaction",
+					f"    signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)",
+					f"    ",
+					f"    # Send transaction",
+					f"    tx_hash = w3.eth.send_raw_transaction(signed_tx.rawTransaction)",
+					f"    ",
+					f"    # Wait for transaction receipt",
+					f"    receipt = w3.eth.wait_for_transaction_receipt(tx_hash)",
+					f"    ",
+					f"    if receipt.status == 1:",
+					f"        print(f'✅ BET PLACED SUCCESSFULLY! Transaction Hash: {{tx_hash.hex()}}')",
+					f"        executed_bets.append({{",
+					f"            'game': '{{home_team_safe}} vs {{away_team_safe}}',",
+					f"            'amount': {bet_amount_usdc},",
+					f"            'tx_hash': tx_hash.hex(),",
+					f"            'status': 'SUCCESS'",
+					f"        }})",
+					f"    else:",
+					f"        print(f'❌ Transaction failed: {{tx_hash.hex()}}')",
+					f"        executed_bets.append({{",
+					f"            'game': '{{home_team_safe}} vs {{away_team_safe}}',",
+					f"            'amount': {bet_amount_usdc},",
+					f"            'tx_hash': tx_hash.hex(),",
+					f"            'status': 'FAILED'",
+					f"        }})",
+					f"    ",
+					f"except Exception as e:",
+					f"    print(f'❌ Error placing bet {{i+1}}: {{str(e)}}')",
+					f"    executed_bets.append({{",
+					f"        'game': '{{home_team_safe}} vs {{away_team_safe}}',",
+					f"        'amount': {bet_amount_usdc},",
+					f"        'tx_hash': 'ERROR',",
+					f"        'status': 'ERROR: {{str(e)}}'",
+					f"    }})",
+					f"",
+					f"    # Add delay between bets to avoid rate limiting",
+					f"    import time",
+					f"    time.sleep(2)",
+					f"",
+				])
+			
+			# Add final summary
+			code_lines.extend([
+				"# Print execution summary",
+				"print('\\n' + '='*60)",
+				"print('BETTING EXECUTION SUMMARY')",
+				"print('='*60)",
+				"",
+				"successful_bets = [bet for bet in executed_bets if bet['status'] == 'SUCCESS']",
+				"failed_bets = [bet for bet in executed_bets if bet['status'] != 'SUCCESS']",
+				"",
+				f"print(f'Total bets attempted: {{len(executed_bets)}}')",
+				f"print(f'Successful bets: {{len(successful_bets)}}')",
+				f"print(f'Failed bets: {{len(failed_bets)}}')",
+				"",
+				"if successful_bets:",
+				"    print('\\n✅ SUCCESSFUL BETS:')",
+				"    for bet in successful_bets:",
+				"        print(f'  - {{bet[\"game\"]}}: {{bet[\"amount\"]}} USDC.e (Tx: {{bet[\"tx_hash\"]}})')",
+				"",
+				"if failed_bets:",
+				"    print('\\n❌ FAILED BETS:')",
+				"    for bet in failed_bets:",
+				"        print(f'  - {{bet[\"game\"]}}: {{bet[\"status\"]}}')",
+				"",
+				"print('\\n' + '='*60)",
+				"print('BETTING EXECUTION COMPLETE')",
+				"print('='*60)",
+				"",
+				"# Return the executed bets for further processing",
+				"executed_bets"
+			])
+			
+			# Combine all code lines
+			executable_code = "\n".join(code_lines)
+			
+			print(f"--- Generated executable betting code ({len(executable_code)} characters) ---")
+			print("--- Code includes: Web3 setup, ABI loading, transaction building, signing, and sending ---")
+			print("--- ON-CHAIN TRANSACTIONS ARE FULLY ENABLED ---")
+			
+			return executable_code
+			
+		except Exception as e:
+			print(f"--- ERROR generating betting code: {e} ---")
+			return f"# Error generating betting code: {str(e)}"
+
+	def formulate_betting_strategy(self, games_data: List[Dict]) -> str:
+		"""
+		Formulate betting strategy using enriched data from multiple services.
+		
+		This method integrates data from all available services (Overtime, Search, Weather, Odds, News)
+		to create a comprehensive Master Prompt for the LLM to make final betting decisions.
+		
+		Args:
+			games_data (List[Dict]): List of games from OvertimeService
+			
+		Returns:
+			str: Master Prompt containing all integrated data for LLM decision making
+		"""
+		try:
+			print("--- Formulating Master Prompt with integrated services ---")
+			
+			# Initialize the Master Prompt structure
+			master_prompt_parts = []
+			
+			# Header section
+			master_prompt_parts.append("=" * 80)
+			master_prompt_parts.append("MASTER BETTING ANALYSIS PROMPT")
+			master_prompt_parts.append("=" * 80)
+			master_prompt_parts.append("")
+			
+			# Market Data Section
+			master_prompt_parts.append("📊 MARKET DATA")
+			master_prompt_parts.append("-" * 40)
+			if games_data:
+				master_prompt_parts.append(f"Available Games: {len(games_data)}")
+				for i, game in enumerate(games_data[:5], 1):  # Show first 5 games
+					game_info = f"{i}. {game.get('home_team', 'Unknown')} vs {game.get('away_team', 'Unknown')}"
+					if 'sport' in game:
+						game_info += f" ({game['sport']})"
+					if 'start_time' in game:
+						game_info += f" - {game['start_time']}"
+					master_prompt_parts.append(game_info)
+			else:
+				master_prompt_parts.append("No games data available")
+			master_prompt_parts.append("")
+			
+			# Live Odds Section
+			master_prompt_parts.append("🎯 LIVE ODDS")
+			master_prompt_parts.append("-" * 40)
+			if self.odds_service:
+				try:
+					# Fetch live odds for all sports
+					all_odds = self.odds_service.get_odds_for_all_target_sports(test_mode=True)
+					if all_odds:
+						odds_count = sum(len(odds_list) for odds_list in all_odds.values())
+						master_prompt_parts.append(f"Live odds available for {odds_count} games across {len(all_odds)} sports")
+						
+						# Show sample odds data
+						for sport_key, odds_list in list(all_odds.items())[:3]:  # First 3 sports
+							if odds_list:
+								sample_odds = odds_list[0]
+								odds_info = f"{sport_key}: {sample_odds.get('home_team', 'Team1')} vs {sample_odds.get('away_team', 'Team2')}"
+								if 'home_odds' in sample_odds and 'away_odds' in sample_odds:
+									odds_info += f" - H: {sample_odds['home_odds']}, A: {sample_odds['away_odds']}"
+								master_prompt_parts.append(odds_info)
+					else:
+						master_prompt_parts.append("No live odds data available")
+				except Exception as e:
+					master_prompt_parts.append(f"Odds service error: {str(e)}")
+			else:
+				master_prompt_parts.append("Odds service not available")
+			master_prompt_parts.append("")
+			
+			# Weather Conditions Section
+			master_prompt_parts.append("🌤️ WEATHER CONDITIONS")
+			master_prompt_parts.append("-" * 40)
+			if self.weather_service:
+				try:
+					# Get weather for major cities (sample)
+					major_cities = ["London", "New York", "Los Angeles", "Chicago", "Miami"]
+					weather_samples = []
+					
+					for city in major_cities[:3]:  # First 3 cities
+						try:
+							weather_data = self.weather_service.get_weather_by_city(city)
+							if weather_data:
+								weather_info = f"{city}: {weather_data.get('description', 'Unknown')}, {weather_data.get('temperature', 'N/A')}°C"
+								weather_samples.append(weather_info)
+						except:
+							continue
+					
+					if weather_samples:
+						master_prompt_parts.extend(weather_samples)
+					else:
+						master_prompt_parts.append("Weather data not available")
+				except Exception as e:
+					master_prompt_parts.append(f"Weather service error: {str(e)}")
+			else:
+				master_prompt_parts.append("Weather service not available")
+			master_prompt_parts.append("")
+			
+			# Latest News Section
+			master_prompt_parts.append("📰 LATEST NEWS")
+			master_prompt_parts.append("-" * 40)
+			if self.news_service:
+				try:
+					# Fetch recent sports news
+					news_data = self.news_service.get_sports_news()
+					if news_data and len(news_data) > 0:
+						master_prompt_parts.append(f"Recent sports news available: {len(news_data)} articles")
+						
+						# Show sample news headlines
+						for i, news in enumerate(news_data[:3], 1):  # First 3 news items
+							headline = news.get('title', 'No title')
+							master_prompt_parts.append(f"{i}. {headline[:80]}{'...' if len(headline) > 80 else ''}")
+					else:
+						master_prompt_parts.append("No recent sports news available")
+				except Exception as e:
+					master_prompt_parts.append(f"News service error: {str(e)}")
+			else:
+				master_prompt_parts.append("News service not available")
+			master_prompt_parts.append("")
+			
+			# Geographic Data Section
+			master_prompt_parts.append("🌍 GEOGRAPHIC DATA")
+			master_prompt_parts.append("-" * 40)
+			if self.search_service:
+				try:
+					# Sample geographic data for major teams
+					sample_teams = ["Manchester United", "Real Madrid", "Barcelona"]
+					geo_samples = []
+					
+					for team in sample_teams[:2]:  # First 2 teams
+						try:
+							location_data = self.search_service.search_team_location(team)
+							if location_data:
+								geo_info = f"{team}: {location_data.get('city', 'Unknown')}, {location_data.get('country', 'Unknown')}"
+								geo_samples.append(geo_info)
+						except:
+							continue
+					
+					if geo_samples:
+						master_prompt_parts.extend(geo_samples)
+					else:
+						master_prompt_parts.append("Geographic data not available")
+				except Exception as e:
+					master_prompt_parts.append(f"Search service error: {str(e)}")
+			else:
+				master_prompt_parts.append("Search service not available")
+			master_prompt_parts.append("")
+			
+			# Final Decision Instructions
+			master_prompt_parts.append("🎯 FINAL DECISION INSTRUCTIONS")
+			master_prompt_parts.append("-" * 40)
+			master_prompt_parts.append("Based on all the above data, act as a professional betting analyst and identify up to 3 high-value betting opportunities.")
+			master_prompt_parts.append("")
+			master_prompt_parts.append("Consider the following factors:")
+			master_prompt_parts.append("- Weather conditions (especially for outdoor sports)")
+			master_prompt_parts.append("- Geographic location and regional factors")
+			master_prompt_parts.append("- Live odds and market movements")
+			master_prompt_parts.append("- Recent news and team developments")
+			master_prompt_parts.append("- Historical performance data")
+			master_prompt_parts.append("")
+			master_prompt_parts.append("Provide your decisions in the following JSON format:")
+			master_prompt_parts.append("```json")
+			master_prompt_parts.append("{")
+			master_prompt_parts.append('  "betting_opportunities": [')
+			master_prompt_parts.append('    {')
+			master_prompt_parts.append('      "game_id": "unique_identifier",')
+			master_prompt_parts.append('      "teams": "Team A vs Team B",')
+			master_prompt_parts.append('      "sport": "sport_name",')
+			master_prompt_parts.append('      "bet_type": "home_win/away_win/draw/over/under",')
+			master_prompt_parts.append('      "confidence_level": "high/medium/low",')
+			master_prompt_parts.append('      "reasoning": "detailed explanation of why this bet is valuable",')
+			master_prompt_parts.append('      "recommended_stake": "percentage of bankroll (1-5%)",')
+			master_prompt_parts.append('      "risk_assessment": "low/medium/high"')
+			master_prompt_parts.append('    }')
+			master_prompt_parts.append('  ],')
+			master_prompt_parts.append('  "market_analysis": "Overall market sentiment and key insights",')
+			master_prompt_parts.append('  "risk_warnings": "Any specific risks or market conditions to be aware of"')
+			master_prompt_parts.append("}")
+			master_prompt_parts.append("```")
+			master_prompt_parts.append("")
+			master_prompt_parts.append("=" * 80)
+			
+			# Combine all parts into the final Master Prompt
+			master_prompt = "\n".join(master_prompt_parts)
+			
+			print(f"--- Successfully created Master Prompt ({len(master_prompt)} characters) ---")
+			print("--- Master Prompt sections: Market Data, Live Odds, Weather, News, Geographic Data ---")
+			
+			return master_prompt
+			
+		except Exception as e:
+			print(f"--- ERROR in formulate_betting_strategy: {e} ---")
+			# Return a basic prompt as fallback
+			return f"Error generating comprehensive prompt: {str(e)}. Please analyze available games data manually."
+
+
+if __name__ == "__main__":
+	# Αυτός ο κώδικας είναι προσωρινός, μόνο για τη δοκιμή
+	print("--- Initializing Test Run ---")
+	# (Θα χρειαστεί να περάσουμε ψεύτικες τιμές εδώ για τη δοκιμή)
+	# agent = BettingAgent(agent_id="test", rag=None, db=None, sensor=None, genner=None, container_manager=None, news_service=None, wallet_service=None, prompt_generator=None)
+
+	# Προσωρινή άμεση κλήση στο service για επαλήθευση
+	overtime = OvertimeService()
+	markets = overtime.get_sports_data()
+	if markets:
+		print(f"--- SUCCESS: Fetched {len(markets)} markets from Overtime. ---")
+		print("--- Sample Market Data: ---")
+		print(json.dumps(markets[:1], indent=2))
+	else:
+		print("--- FAILURE: Could not fetch market data. ---")
