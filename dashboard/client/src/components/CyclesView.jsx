@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import RecommendationCard from "./RecommendationCard";
+import "./CyclesView.css";
 
 function CyclesView() {
   const [cycles, setCycles] = useState([]);

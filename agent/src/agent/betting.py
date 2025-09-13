@@ -2,6 +2,7 @@
 import logging
 import re, json, os, time
 import uuid
+import requests
 from textwrap import dedent
 from typing import Dict, List, Set, Tuple, Optional
 from agent.src.db.interface import DBInterface
@@ -17,9 +18,34 @@ from agent.src.services.wallet_service import WalletService
 from agent.src.services.the_odds_service import TheOddsService
 from agent.src.services.weather_service import WeatherService
 from agent.src.services.search_service import SearchService
+
+def get_erc20_balance(w3, wallet_address, token_address):
+	"""Get ERC20 token balance for a wallet address"""
+	try:
+		from agent.src.contracts.usdc_abi import USDC_E_ABI
+		contract = w3.eth.contract(address=w3.to_checksum_address(token_address), abi=USDC_E_ABI)
+		balance = contract.functions.balanceOf(w3.to_checksum_address(wallet_address)).call()
+		# USDC has 6 decimals
+		return w3.from_wei(balance, 'mwei')  # 1e6 = mwei
+	except Exception as e:
+		print(f"Error getting ERC20 balance: {e}")
+		return 0
 from agent.src.datatypes import StrategyData
 from agent.src.contracts.overtime_abi import OVERTIME_SPORTS_AMM_ABI
+from web3 import Web3
 from datetime import datetime, timedelta
+
+def get_eth_price():
+    """Fetches the current ETH price in USD from CoinGecko."""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+        response = requests.get(url)
+        response.raise_for_status()
+        price_data = response.json()
+        return price_data['ethereum']['usd']
+    except Exception as e:
+        print(f"Could not fetch ETH price from CoinGecko: {e}")
+        return 3500.0 # Fallback price
 
 class BettingPromptGenerator:
 	"""
@@ -495,6 +521,31 @@ class BettingAgent:
 			conn.close()
 			
 			print(f"🔄 Started new agent cycle: {cycle_id}")
+			
+			# ETH Balance Check
+			try:
+				from web3 import Web3
+				import os
+				w3 = Web3(Web3.HTTPProvider(os.getenv('ARBITRUM_RPC_URL')))
+				wallet_addr = os.getenv('WALLET_ADDRESS')
+				if w3.is_connected() and wallet_addr:
+					eth_raw_balance = w3.eth.get_balance(w3.to_checksum_address(wallet_addr))
+					eth_balance = w3.from_wei(eth_raw_balance, 'ether')
+					self.eth_balance = float(eth_balance)
+					self.logger.info(f'--- 💰 ETH BALANCE CHECK --- | Live Balance: {self.eth_balance:.8f} ETH ---')
+					
+					# --- DEFINITIVE FIX: READ USDC BALANCE ---
+					usdc_address = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' # DEFINITIVE FIX: Hardcoded Native USDC Address
+					if usdc_address:
+						usdc_balance = get_erc20_balance(w3, wallet_addr, usdc_address)
+						self.usdc_balance = float(usdc_balance)
+						self.logger.info(f'--- 💵 USDC BALANCE CHECK --- | Live Balance: ${self.usdc_balance:.2f} USDC ---')
+					else:
+						self.usdc_balance = 0.0
+			except Exception as e:
+				self.logger.error(f'Could not perform ETH balance check: {e}')
+				self.eth_balance = 0.0
+			
 			return cycle_id
 			
 		except Exception as e:
@@ -629,11 +680,16 @@ class BettingAgent:
 			from datetime import timezone, timedelta
 			now_utc = datetime.now(timezone.utc)
 			
-			# 🕐 TIMING FILTER: Only games within next 24 hours for immediate betting
-			max_future_time = now_utc + timedelta(hours=24)
+			# High-value market thresholds for exceptions
+			HIGH_LIQUIDITY_THRESHOLD = 1000 # in USDCe
+			HIGH_VOLUME_THRESHOLD = 5000 # in USDCe
+			
+			# 🕐 TIMING FILTER: Only games within next 8 hours for immediate betting
+			max_future_time = now_utc + timedelta(hours=8)
 			min_future_time = now_utc + timedelta(hours=2)  # At least 2 hours to prepare
 			
-			is_timing_valid = min_future_time <= maturity_date <= max_future_time
+			is_high_value_market = market.get('liquidity', 0) > HIGH_LIQUIDITY_THRESHOLD and market.get('volume', 0) > HIGH_VOLUME_THRESHOLD
+			is_timing_valid = (min_future_time <= maturity_date <= max_future_time) or is_high_value_market
 			
 			is_valid = (
 				market.get('isOpen', False) is True and
@@ -658,8 +714,8 @@ class BettingAgent:
 					hours_diff = (maturity_date - now_utc).total_seconds() / 3600
 					if hours_diff < 2:
 						reasons.append(f"Too soon ({hours_diff:.1f}h < 2h)")
-					elif hours_diff > 24:
-						reasons.append(f"Too far ({hours_diff:.1f}h > 24h)")
+					elif hours_diff > 8:
+						reasons.append(f"Too far ({hours_diff:.1f}h > 8h)")
 				
 				self.logger.warning(f"REJECTED Market {market_id}: Reasons: {', '.join(reasons)}")
 				print(f"❌ REJECTED Market {market_id}: {', '.join(reasons)}")
@@ -683,16 +739,16 @@ class BettingAgent:
 		try:
 			# Extract basic game information
 			# Use gameId from market data (Overtime API uses 'gameId' not 'game_id')
-			game_id = market.get("gameId")
-			if not game_id:
-				# Fallback: create a unique game_id from team names and maturity date
+			market_id = market.get("gameId")
+			if not market_id:
+				# Fallback: create a unique market_id from team names and maturity date
 				home_team = market.get("homeTeam", "Unknown")
 				away_team = market.get("awayTeam", "Unknown")
 				maturity_date = market.get("maturityDate", "")
-				game_id = f"{home_team}_{away_team}_{maturity_date}".replace(" ", "_")
+				market_id = f"{home_team}_{away_team}_{maturity_date}".replace(" ", "_")
 		
 			processed_game = {
-				"game_id": game_id,
+				"market_id": market_id,
 				"sport": market.get("sport"),
 				"league": market.get("leagueName", "Unknown"),
 				"home_team": market.get("homeTeam"),
@@ -735,53 +791,52 @@ class BettingAgent:
 			print(f"Error processing market {market.get('gameId', 'unknown')}: {e}")
 			return None
 
-	# CODE PAYLOAD for manage_bankroll
 	def manage_bankroll(self, llm_decisions: List[Dict], wallet_balance: float) -> List[Dict]:
-		self.logger.info(f"--- Starting Bankroll Management for {len(llm_decisions)} LLM decisions with balance ${wallet_balance:.2f} ---")
-		if not llm_decisions:
+		# THIS FUNCTION NOW EXPECTS wallet_balance TO BE IN USDC
+		
+		self.logger.info(f'--- 🧠 DEBUG BANKROLL (USDC MODE) ---')
+		self.logger.info(f'   - Received wallet_balance: ${wallet_balance:.2f} USDC')
+		
+		if not llm_decisions or wallet_balance < 3.08: # Safety threshold in USDC
 			return []
 
 		AGENT_EDGE = 0.02
-		MAX_PORTFOLIO_RISK = 0.20
+		MINIMUM_BET_USD = 3.00
+		MAX_PORTFOLIO_RISK_USD = wallet_balance * 0.20 # Max 20% of live USDC balance
 		final_decisions = []
 
 		for decision in llm_decisions:
 			try:
-				# Find the corresponding game data to get the odds
-				market_id = decision.get('market_id')
-				# This part needs to be improved by passing valid_games to this method
-				# For now, we will use a placeholder for odds
-				decimal_odds = 2.0 # Placeholder
+				decimal_odds = decision.get('decimal_odds', 2.0)
+				if decimal_odds <= 1.0: continue
 
-				# Kelly Criterion Calculation
 				p = (1 / decimal_odds) + AGENT_EDGE
 				if p > 1.0: p = 0.99
 				q = 1 - p
 				b = decimal_odds - 1
-
 				if b <= 0: continue
 
 				kelly_fraction = (b * p - q) / b
-
 				if kelly_fraction > 0:
-					bet_amount = wallet_balance * (kelly_fraction / 2) # Half Kelly
+					bet_amount_usd = wallet_balance * (kelly_fraction / 2) # Half Kelly in USD
 
-					# MODIFY the existing decision object, DON'T create a new one
-					decision['bet_amount'] = round(bet_amount, 2)
-					final_decisions.append(decision)
+					if 0 < bet_amount_usd < MINIMUM_BET_USD:
+						bet_amount_usd = MINIMUM_BET_USD
+					
+					if bet_amount_usd >= MINIMUM_BET_USD:
+						decision['recommended_amount'] = bet_amount_usd
+						final_decisions.append(decision)
 
 			except Exception as e:
-				self.logger.error(f"Error in bankroll management for decision {decision.get('market_id')}: {e}")
+				self.logger.error(f"Error in bankroll calc for decision {decision.get('market_id')}: {e}")
 
-		# Central Risk Switch
-		total_bet_amount = sum(d.get('bet_amount', 0) for d in final_decisions)
-		max_allowed_total = wallet_balance * MAX_PORTFOLIO_RISK
-
-		if total_bet_amount > max_allowed_total:
-			scaling_factor = max_allowed_total / total_bet_amount
+		# Central Risk Switch (in USD)
+		total_bet_amount_usd = sum(d.get('recommended_amount', 0) for d in final_decisions)
+		if total_bet_amount_usd > MAX_PORTFOLIO_RISK_USD:
+			scaling_factor = MAX_PORTFOLIO_RISK_USD / total_bet_amount_usd
 			for d in final_decisions:
-				d['bet_amount'] = round(d['bet_amount'] * scaling_factor, 2)
-
+				d['recommended_amount'] *= scaling_factor
+		
 		return final_decisions
 	
 	def _track_compound_growth(self, decisions: List[Dict], current_balance: float):
@@ -964,12 +1019,12 @@ class BettingAgent:
 		try:
 			# Create StrategyData from decision
 			strategy_data = StrategyData(
-				strategy_id=f"betting_{decision.get('game_id', 'unknown')}_{int(time.time())}",
+				strategy_id=f"betting_{decision.get('market_id', 'unknown')}_{int(time.time())}",
 				agent_id=self.agent_id,
 				summarized_desc=f"Bet on {decision.get('home_team', 'Unknown')} vs {decision.get('away_team', 'Unknown')}",
 				full_desc=f"Betting decision: {decision.get('decision', 'Unknown')} for {decision.get('sport', 'Unknown')} game",
 				parameters={
-					"game_id": decision.get("game_id"),
+					"market_id": decision.get("market_id"),
 					"bet_amount": decision.get("bet_amount"),
 					"status": decision.get("status"),
 					"home_team": decision.get("home_team"),
@@ -1143,409 +1198,9 @@ class BettingAgent:
 		
 		return None
 
-	def generate_betting_code(self, betting_decisions: List[Dict]) -> str:
-		"""
-		Generate executable Python code for placing on-chain bets.
-		
-		This method creates self-contained Python code that can execute
-		real on-chain transactions on the Arbitrum network using the
-		Overtime Protocol smart contract.
-		
-		Args:
-			betting_decisions (List[Dict]): List of betting decisions with amounts
-			
-		Returns:
-			str: Executable Python code for placing bets
-		"""
-		if not betting_decisions:
-			return "# No betting decisions to execute"
-		
-		try:
-			print("--- Generating executable betting code for on-chain transactions ---")
-			
-			# Import the ABI from the contracts module
-			abi_string = json.dumps(OVERTIME_SPORTS_AMM_ABI)
-			
-			# Start building the code
-			# ERC20 ABI for approve function
-			erc20_abi = [{"inputs":[{"internalType":"address","name":"spender","type":"address"},{"internalType":"uint256","name":"amount","type":"uint256"}],"name":"approve","outputs":[{"internalType":"bool","name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"internalType":"address","name":"owner","type":"address"},{"internalType":"address","name":"spender","type":"address"}],"name":"allowance","outputs":[{"internalType":"uint256","name":"","type":"uint256"}],"stateMutability":"view","type":"function"}]
-			erc20_abi_string = json.dumps(erc20_abi)
-			
-			code_lines = [
-				"import os",
-				"import json",
-				"from web3 import Web3",
-				"",
-				"# Load ABIs directly in the code",
-				f"abi = json.loads('{abi_string}')",
-				f"erc20_abi = json.loads('{erc20_abi_string}')",
-				"",
-				"# Initialize Web3 connection to Arbitrum",
-				"w3 = Web3(Web3.HTTPProvider(os.getenv('ARBITRUM_RPC_URL')))",
-				"",
-				"# Check connection",
-				"if not w3.is_connected():",
-				"    raise Exception('Failed to connect to Arbitrum network')",
-				"",
-				"# Load contracts",
-				"contract_address = os.getenv('OVERTIME_CONTRACT')",
-				"usdc_address = '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8'  # USDC.e on Arbitrum",
-				"contract = w3.eth.contract(address=contract_address, abi=abi)",
-				"usdc_contract = w3.eth.contract(address=usdc_address, abi=erc20_abi)",
-				"",
-				"# Get wallet details",
-				"wallet_address = os.getenv('WALLET_ADDRESS')",
-				"private_key = os.getenv('PRIVATE_KEY')",
-				"",
-				"if not wallet_address or not private_key:",
-				"    raise Exception('Missing wallet configuration')",
-				"",
-				"print(f'Connected to Arbitrum network: {{w3.eth.chain_id}}')",
-				"print(f'Wallet address: {{wallet_address}}')",
-				"print(f'Contract address: {{contract_address}}')",
-				"print(f'USDC.e address: {{usdc_address}}')",
-				"",
-				"# Execute betting decisions",
-				"executed_bets = []",
-				""
-			]
-			
-			# Add code for each betting decision
-			for i, decision in enumerate(betting_decisions):
-				# Clean team names to prevent syntax errors
-				home_team_safe = decision.get('home_team', 'Unknown').replace("'", "\\'")
-				away_team_safe = decision.get('away_team', 'Unknown').replace("'", "\\'")
-				
-				# Get bet amount in wei (USDC.e has 6 decimals)
-				bet_amount_usdc = decision.get('bet_amount', 0.1)  # Default $0.10
-				bet_amount_wei = int(bet_amount_usdc * 1_000_000)  # Convert to wei
-				
-				# Get position from decision (CRITICAL: Use dynamic position from LLM)
-				position = decision.get('position', 0)  # Position from LLM decision
-				
-				# Add the betting code for this decision
-				game_id = decision.get('market_id', 'unknown')
-				code_lines.extend([
-					f"# Bet {i+1}: {home_team_safe} vs {away_team_safe}",
-					f"try:",
-					f"    print(f'Placing bet {i+1}: {bet_amount_usdc} USDC.e on {home_team_safe} vs {away_team_safe}')",
-					f"    ",
-					f"    # Check current allowance",
-					f"    current_allowance = usdc_contract.functions.allowance(wallet_address, contract_address).call()",
-					f"    print(f'Current USDC.e allowance: {{current_allowance / 1_000_000}} USDC.e')",
-					f"    ",
-					f"    # If allowance is insufficient, approve the required amount",
-					f"    if current_allowance < {bet_amount_wei}:",
-					f"        print(f'Insufficient allowance. Approving {bet_amount_usdc} USDC.e...')",
-					f"        ",
-					f"        # Build approve transaction",
-					f"        approve_tx = usdc_contract.functions.approve(contract_address, {bet_amount_wei}).build_transaction({{",
-					f"            'from': wallet_address,",
-					f"            'nonce': w3.eth.get_transaction_count(wallet_address),",
-					f"            'gas': 500000,",
-					f"            'maxFeePerGas': w3.to_wei('2.0', 'gwei'),",
-					f"            'maxPriorityFeePerGas': w3.to_wei('0.5', 'gwei'),",
-					f"            'chainId': 42161  # Arbitrum One",
-					f"        }})",
-					f"        ",
-					f"        # Sign and send approve transaction",
-					f"        signed_approve_tx = w3.eth.account.sign_transaction(approve_tx, private_key=private_key)",
-					f"        approve_tx_hash = w3.eth.send_raw_transaction(signed_approve_tx.raw_transaction)",
-					f"        ",
-					f"        # Wait for approve transaction",
-					f"        approve_receipt = w3.eth.wait_for_transaction_receipt(approve_tx_hash)",
-					f"        if approve_receipt.status == 1:",
-					f"            print(f'✅ USDC.e approved successfully! Tx: {{approve_tx_hash.hex()}}')",
-					f"        else:",
-					f"            raise Exception(f'Approve transaction failed: {{approve_tx_hash.hex()}}')",
-					f"    else:",
-					f"        print(f'Sufficient allowance available. Proceeding with bet...')",
-					f"    ",
-									f"    # 🛡️ REAL-TIME MARKET VALIDATION",
-				f"    print(f'🔍 LIVE VALIDATION: Checking market status for {home_team_safe} vs {away_team_safe}...')",
-				f"    ",
-				f"    # Real-time contract call to check market availability",
-				f"    try:",
-				f"        # Call the smart contract to get live market data",
-				f"        market_address = '{game_id}'",
-				f"        print(f'📡 Fetching live market data from contract...')",
-				f"        ",
-				f"        # Check if market still exists and is open",
-				f"        # This is a placeholder - we'll use cached data but add timestamp validation",
-				f"        import time",
-				f"        current_time = int(time.time())",
-				f"        ",
-				f"        # Extract validation data with timestamp check",
-				f"        bet_odds = {decision.get('odds', 0)}",
-				f"        market_confidence = {decision.get('confidence_score', 0)}",
-				f"        is_market_open = {decision.get('is_open', False)}",
-				f"        is_market_paused = {decision.get('is_paused', True)}",
-				f"        market_status = {decision.get('market_status', -1)}",
-				f"        ",
-				f"        # Add time-based validation",
-				f"        maturity_date = '{decision.get('maturity_date', '')}'",
-				f"        print(f'🕐 Market maturity: {{maturity_date}}')",
-				f"        ",
-				f"        # SIMPLIFIED: Smart fallback validation (works with any contract)",
-				f"        print(f'🔍 Performing SMART CONTRACT VALIDATION...')",
-				f"        try:",
-				f"            # Skip complex validation for now - use market data validation",
-				f"            print(f'🔍 Using cached market data validation...')",
-				f"            ",
-				f"            # Simple validation: if we have valid odds and confidence, assume tradeable",
-				f"            if bet_odds > 1.001 and market_confidence > 0.5:",
-				f"                print(f'✅ MARKET VALIDATION PASSED: Valid odds ({{bet_odds}}) and confidence ({{market_confidence}})')",
-				f"                is_trading = True",
-				f"            else:",
-				f"                print(f'❌ MARKET VALIDATION FAILED: Invalid odds ({{bet_odds}}) or confidence ({{market_confidence}})')",
-				f"                is_trading = False",
-				f"            ",
-				f"            print(f'📞 FINAL VALIDATION RESULT: is_trading = {{is_trading}}')",
-				f"            ",
-				f"            if not is_trading:",
-				f"                print(f'❌ SMART VALIDATION FAILED: Market not available for trading!')",
-				f"                executed_bets.append({{",
-				f"                    'game': '{home_team_safe} vs {away_team_safe}',",
-				f"                    'amount': {decision['bet_amount']},",
-				f"                    'tx_hash': 'SKIPPED',",
-				f"                    'status': 'SKIPPED: Smart validation failed'",
-				f"                }})",
-				f"                raise Exception('Smart market validation failed - market not trading')",
-				f"            else:",
-				f"                print(f'✅ SMART VALIDATION PASSED: Market available for trading!')",
-				f"                print(f'   📊 Market Quality: odds={{bet_odds}}, confidence={{market_confidence}}')",
-				f"        except Exception as validation_error:",
-				f"            print(f'⚠️  Market validation error: {{str(validation_error)}}')",
-				f"            print(f'   Using fallback validation (assuming tradeable)...')",
-				f"            is_trading = True",
-				f"        ",
-				f"    except Exception as validation_error:",
-				f"        print(f'❌ VALIDATION ERROR: {{str(validation_error)}}')",
-				f"        executed_bets.append({{",
-				f"            'game': '{home_team_safe} vs {away_team_safe}',",
-				f"            'amount': {bet_amount_usdc},",
-				f"            'tx_hash': 'SKIPPED',",
-				f"            'status': 'SKIPPED: Validation error'",
-				f"        }})",
-				f"        raise Exception('Live market validation failed')",
-					f"    ",
-					f"    # Validation Rule 1: Check market status",
-					f"    if not is_market_open:",
-					f"        print(f'❌ MARKET CLOSED: isOpen=False - Skipping {home_team_safe} vs {away_team_safe}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': 'SKIPPED',",
-					f"            'status': 'SKIPPED: Market closed'",
-					f"        }})",
-					f"        raise Exception('Market validation failed - skipping bet')",
-					f"    ",
-					f"    # Validation Rule 2: Check if market is paused",
-					f"    if is_market_paused:",
-					f"        print(f'❌ MARKET PAUSED: isPaused=True - Skipping {home_team_safe} vs {away_team_safe}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': 'SKIPPED',",
-					f"            'status': 'SKIPPED: Market paused'",
-					f"        }})",
-					f"        raise Exception('Market validation failed - skipping bet')",
-					f"    ",
-					f"    # Validation Rule 3: Check market status code", 
-					f"    if market_status != 0:",
-					f"        print(f'❌ INVALID STATUS: status={{market_status}} (expected 0) - Skipping {home_team_safe} vs {away_team_safe}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': 'SKIPPED',",
-					f"            'status': 'SKIPPED: Invalid status'",
-					f"        }})",
-					f"        raise Exception('Market validation failed - skipping bet')",
-					f"    ",
-					f"    # Validation Rule 4: Check odds validity",
-					f"    if bet_odds <= 1.001:",
-					f"        print(f'❌ INVALID ODDS: {{bet_odds}} - Skipping {home_team_safe} vs {away_team_safe}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': 'SKIPPED',",
-					f"            'status': 'SKIPPED: Invalid odds'",
-					f"        }})",
-					f"        raise Exception('Market validation failed - skipping bet')",
-					f"    ",
-					f"    # Validation Rule 5: Check confidence threshold",
-					f"    if market_confidence < 0.5:",
-					f"        print(f'❌ LOW CONFIDENCE: {{market_confidence}} - Skipping {home_team_safe} vs {away_team_safe}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': 'SKIPPED',",
-					f"            'status': 'SKIPPED: Low confidence'",
-					f"        }})",
-					f"        raise Exception('Market validation failed - skipping bet')",
-					f"    ",
-									f"    # FINAL VALIDATION: Enhanced Pre-Transaction Checks",
-				f"    print(f'🚀 FINAL CHECKS: Enhanced pre-transaction validation...')",
-				f"    ",
-				f"    # Check bet amount is reasonable",
-				f"    bet_amount_usdc = {bet_amount_usdc}",
-				f"    if bet_amount_usdc < 0.01 or bet_amount_usdc > 100:",
-				f"        print(f'❌ INVALID BET AMOUNT: ${{bet_amount_usdc}} outside range $0.01-$100')",
-				f"        executed_bets.append({{",
-				f"            'game': '{home_team_safe} vs {away_team_safe}',",
-				f"            'amount': bet_amount_usdc,",
-				f"            'tx_hash': 'SKIPPED',",
-				f"            'status': 'SKIPPED: Invalid bet amount'",
-				f"        }})",
-				f"        raise Exception('Invalid bet amount - outside safe range')",
-				f"    ",
-				f"    # Add small delay to ensure market state consistency",
-				f"    print(f'⏱️  Adding consistency delay (3 seconds)...')",
-				f"    time.sleep(3)",
-				f"    ",
-				f"    print(f'✅ ALL VALIDATIONS PASSED: Market Open, Not Paused, Valid Status, Good Odds & Confidence')",
-				f"    print(f'   📊 Details: isOpen={{is_market_open}}, isPaused={{is_market_paused}}, status={{market_status}}')",
-				f"    print(f'   📈 Betting: odds={{bet_odds}}, confidence={{market_confidence}} on {home_team_safe} vs {away_team_safe}')",
-				f"    print(f'   💰 Amount: ${{bet_amount_usdc}} USDC.e ({{int(bet_amount_usdc * 1000000)}} wei)')",
-					f"    ",
-					f"    # Build betting transaction using DYNAMIC POSITION from LLM decision",
-					f"    position = {position}  # Position determined by LLM analysis",
-					f"    print(f'   🎯 Position: {{position}} (0=Home, 1=Away, 2=Draw)')",
-					f"    # Convert market ID to bytes32 format for contract call",
-					f"    market_id_bytes32 = w3.to_bytes(hexstr='{game_id}')",
-					f"    tx = contract.functions.buyFromAMM(market_id_bytes32, position, {bet_amount_wei}).build_transaction({{",
-					f"        'from': wallet_address,",
-					f"        'nonce': w3.eth.get_transaction_count(wallet_address),",
-					f"        'gas': 800000,",
-					f"        'maxFeePerGas': w3.to_wei('2.0', 'gwei'),",
-					f"        'maxPriorityFeePerGas': w3.to_wei('0.5', 'gwei'),",
-					f"        'chainId': 42161  # Arbitrum One",
-					f"    }})",
-					f"    ",
-					f"    # Sign transaction",
-					f"    signed_tx = w3.eth.account.sign_transaction(tx, private_key=private_key)",
-					f"    ",
-					f"    # DEMO MODE: Simulate successful transaction for invalid markets",
-					f"    print(f'🎭 DEMO MODE: Simulating transaction for market validation...')",
-					f"    ",
-					f"    # Try to send real transaction, fallback to simulation",
-					f"    try:",
-					f"        # Test transaction first",
-					f"        w3.eth.estimate_gas(tx)",
-					f"        # If gas estimation succeeds, send real transaction",
-					f"        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)",
-					f"        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)",
-					f"        print(f'✅ REAL TRANSACTION SUCCESSFUL!')",
-					f"    except Exception as e:",
-					f"        print(f'🎭 Real transaction would fail: {{str(e)[:50]}}... Simulating success!')",
-					f"        # Create simulated successful transaction",
-					f"        import secrets",
-					f"        fake_tx_hash = '0x' + secrets.token_hex(32)",
-					f"        print(f'🎬 SIMULATED SUCCESS: {{fake_tx_hash}}')",
-					f"        ",
-					f"        # Create mock receipt object",
-					f"        class MockReceipt:",
-					f"            def __init__(self):",
-					f"                self.status = 1",
-					f"                self.gasUsed = 150000",
-					f"                self.logs = [f'MockEvent{{i}}' for i in range(3)]  # Mock events",
-					f"        ",
-					f"        tx_hash = type('obj', (object,), {{'hex': lambda: fake_tx_hash}})()",
-					f"        receipt = MockReceipt()",
-					f"    ",
-					f"    if receipt.status == 1:",
-				f"        print(f'📋 TRANSACTION SUCCESSFUL - Now validating actual execution...')",
-				f"        print(f'   🔗 Transaction Hash: {{tx_hash.hex()}}')",
-				f"        print(f'   ⛽ Gas Used: {{receipt.gasUsed:,}} / {{receipt.gasUsed/800000*100:.1f}}% of limit')",
-				f"        ",
-				f"        # CRITICAL: Check if any events were emitted (indicates real execution)",
-				f"        if len(receipt.logs) > 0:",
-				f"            print(f'✅ REAL EXECUTION CONFIRMED: {{len(receipt.logs)}} event logs detected!')",
-				f"            execution_status = 'SUCCESS: Real token transfer confirmed'",
-				f"        else:",
-				f"            print(f'⚠️  WARNING: Transaction successful but NO EVENT LOGS!')",
-				f"            print(f'   This indicates the transaction executed but no tokens were transferred.')",
-				f"            print(f'   Possible causes: Market closed, insufficient liquidity, invalid position')",
-				f"            execution_status = 'SUCCESS: Transaction only (no token transfer)'",
-				f"        ",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': tx_hash.hex(),",
-				f"            'gas_used': receipt.gasUsed,",
-				f"            'events': len(receipt.logs),",
-				f"            'status': execution_status",
-					f"        }})",
-					f"    else:",
-					f"        print(f'❌ Transaction failed: {{tx_hash.hex()}}')",
-					f"        executed_bets.append({{",
-					f"            'game': '{home_team_safe} vs {away_team_safe}',",
-					f"            'amount': {bet_amount_usdc},",
-					f"            'tx_hash': tx_hash.hex(),",
-					f"            'status': 'FAILED'",
-					f"        }})",
-					f"    ",
-					f"except Exception as e:",
-					f"    print(f'❌ Error placing bet {i+1}: {{str(e)}}')",
-					f"    executed_bets.append({{",
-					f"        'game': '{home_team_safe} vs {away_team_safe}',",
-					f"        'amount': {bet_amount_usdc},",
-					f"        'tx_hash': 'ERROR',",
-					f"        'status': f'ERROR: {{str(e)}}'",
-					f"    }})",
-					f"",
-					f"    # Add delay between bets to avoid rate limiting",
-					f"    import time",
-					f"    time.sleep(2)",
-					f"",
-				])
-			
-			# Add final summary
-			code_lines.extend([
-				"# Print execution summary",
-				"print('\\n' + '='*60)",
-				"print('BETTING EXECUTION SUMMARY')",
-				"print('='*60)",
-				"",
-				"successful_bets = [bet for bet in executed_bets if bet['status'] == 'SUCCESS']",
-				"failed_bets = [bet for bet in executed_bets if bet['status'] != 'SUCCESS']",
-				"",
-				f"print(f'Total bets attempted: {{len(executed_bets)}}')",
-				f"print(f'Successful bets: {{len(successful_bets)}}')",
-				f"print(f'Failed bets: {{len(failed_bets)}}')",
-				"",
-				"if successful_bets:",
-				"    print('\\n✅ SUCCESSFUL BETS:')",
-				"    for bet in successful_bets:",
-				"        print(f'  - {bet[\"game\"]}: {bet[\"amount\"]} USDC.e (Tx: {bet[\"tx_hash\"]})')",
-				"",
-				"if failed_bets:",
-				"    print('\\n❌ FAILED BETS:')",
-				"    for bet in failed_bets:",
-				"        print(f'  - {bet[\"game\"]}: {bet[\"status\"]})')",
-				"",
-				"print('\\n' + '='*60)",
-				"print('BETTING EXECUTION COMPLETE')",
-				"print('='*60)",
-				"",
-				"# Return the executed bets for further processing",
-				"executed_bets"
-			])
-			
-			# Combine all code lines
-			executable_code = "\n".join(code_lines)
-			
-			print(f"--- Generated executable betting code ({len(executable_code)} characters) ---")
-			print("--- Code includes: Web3 setup, ABI loading, transaction building, signing, and sending ---")
-			print("--- ON-CHAIN TRANSACTIONS ARE FULLY ENABLED ---")
-			
-			return executable_code
-			
-		except Exception as e:
-			print(f"--- ERROR generating betting code: {e} ---")
-			return f"# Error generating betting code: {str(e)}"
 
 	def formulate_betting_strategy(self, games_data: List[Dict]) -> List[Dict]:
+		print(">>> ENTERING formulate_betting_strategy <<<")
 		"""
 		Formulate betting strategy using enriched data from multiple services.
 		
@@ -1573,12 +1228,16 @@ class BettingAgent:
 				conn = sqlite3.connect(db_path)
 				cursor = conn.cursor()
 				
-				# Query existing market_ids from recommendations
-				cursor.execute("SELECT DISTINCT market_id FROM agent_recommendations WHERE market_id IS NOT NULL")
+				# Query existing market_ids from recommendations (all statuses)
+				cursor.execute("SELECT DISTINCT market_id FROM agent_recommendations")
 				existing_market_ids = set(row[0] for row in cursor.fetchall())
 				conn.close()
 				
 				print(f"🔍 DEDUPLICATION: Found {len(existing_market_ids)} previously analyzed markets")
+				
+				# DEBUG: Log first 5 existing market IDs from DB
+				print(f"DEBUG: First 5 existing market IDs from DB: {list(existing_market_ids)[:5]}")
+				print(f"DEBUG: First 5 incoming game market IDs: {[game.get('market_id') for game in games_data[:5]]}")
 				
 				# Filter out games that have already been analyzed
 				original_count = len(games_data)
@@ -1587,6 +1246,13 @@ class BettingAgent:
 				
 				for game in games_data:
 					market_id = game.get('market_id', '')
+					# Skip games with empty or None market_id
+					if not market_id or market_id.strip() == '':
+						print(f"🔍 DEDUPLICATION: Skipping game with empty market_id")
+						duplicates_removed += 1
+						continue
+					
+					# Check if market_id exists in database
 					if market_id not in existing_market_ids:
 						filtered_games.append(game)
 					else:
@@ -1597,6 +1263,11 @@ class BettingAgent:
 				games_data = filtered_games
 				print(f"🔍 DEDUPLICATION: Removed {duplicates_removed} duplicates, {len(games_data)} fresh games remaining")
 				
+				# Additional validation: ensure we have games to process
+				if len(games_data) == 0:
+					print("⚠️  DEDUPLICATION WARNING: No fresh games remaining after deduplication")
+					return []
+				
 			except Exception as dedup_error:
 				print(f"⚠️ DEDUPLICATION WARNING: Could not check for duplicates: {dedup_error}")
 				print("🔍 DEDUPLICATION: Continuing with all games (no deduplication)")
@@ -1606,7 +1277,7 @@ class BettingAgent:
 				print("🔍 DEDUPLICATION: No fresh games to analyze, skipping LLM call")
 				return []
 			# --- LOW FUEL SAFETY CHECK ---
-			MIN_ETH_FOR_OPERATIONS = 0.001  # Κατώτατο όριο ασφαλείας για gas σε Arbitrum
+			MIN_ETH_FOR_OPERATIONS = 0.001  # Minimum safety threshold for gas on Arbitrum
 			
 			# ANALYSIS-ONLY MODE: Skip ETH check since we don't execute transactions
 			if self.eth_balance < MIN_ETH_FOR_OPERATIONS:
@@ -1819,7 +1490,7 @@ class BettingAgent:
 			master_prompt_parts.append("- Market liquidity and volume indicators")
 			master_prompt_parts.append("")
 			master_prompt_parts.append("💎 LIQUIDITY & VOLUME ANALYSIS:")
-			master_prompt_parts.append("Δώσε ιδιαίτερη βαρύτητα σε αγορές με υψηλή ρευστότητα (liquidity > 0.5) και όγκο (volume > 1), καθώς αποτελούν ισχυρές ενδείξεις για την εμπιστοσύνη της αγοράς.")
+			master_prompt_parts.append("Prioritize markets with high liquidity (liquidity > 0.5) and volume (volume > 1), as they are strong indicators of market confidence.")
 			master_prompt_parts.append("")
 			
 			# 🚀 PROFESSIONAL VOLUME BETTING INSTRUCTION
@@ -1952,6 +1623,7 @@ class BettingAgent:
 			return []
 
 	def _translate_master_prompt_to_decisions(self, master_prompt: str, games_data: List[Dict]) -> List[Dict]:
+		print(">>> ENTERING _translate_master_prompt_to_decisions <<<")
 		"""
 		🚀 CRITICAL TRANSLATOR: Send master prompt to LLM and parse JSON response to betting decisions.
 		
@@ -1979,26 +1651,69 @@ class BettingAgent:
 				)
 			)
 			
-			# Send to LLM via genner
+			# Send to LLM via genner with detailed error handling
 			print(f"📤 Sending {len(master_prompt)} character prompt to LLM...")
 			print(f"🔍 DEBUG: About to call self.genner.ch_completion...")
-			gen_result = self.genner.ch_completion(ctx_ch)
-			print(f"🔍 DEBUG: gen_result type: {type(gen_result)}")
+			print(f"🔍 DEBUG: genner object type: {type(self.genner)}")
+			print(f"🔍 DEBUG: genner object: {self.genner}")
+			
+			# --- PRE-LLM DIAGNOSTIC SENSOR ---
+			print("!!! PRE-LLM SENSOR ACTIVATED !!!")
+			if self.genner is None:
+				print("!!! CRITICAL ERROR: self.genner object is None !!!")
+			else:
+				print(f"!!! Genner Object Type: {type(self.genner)} !!!")
+				print(f"!!! Genner Object Details: {self.genner.__dict__} !!!")
+			print("!!! END OF PRE-LLM SENSOR !!!")
+			# --- END OF DIAGNOSTIC ---
+			
+			try:
+				gen_result = self.genner.ch_completion(ctx_ch)
+				print(f"!!! RAW LLM RESULT CAPTURED !!!\n{gen_result}\n!!! END OF RAW LLM RESULT !!!")
+				print(f"🔍 DEBUG: gen_result type: {type(gen_result)}")
+				print(f"🔍 DEBUG: gen_result value: {gen_result}")
+			except Exception as llm_call_error:
+				print(f"❌ LLM CALL ERROR: Failed to call self.genner.ch_completion")
+				print(f"🔍 DEBUG: LLM call error type: {type(llm_call_error)}")
+				print(f"🔍 DEBUG: LLM call error message: {str(llm_call_error)}")
+				print(f"🔍 DEBUG: LLM call error args: {llm_call_error.args}")
+				import traceback
+				print(f"🔍 DEBUG: LLM call traceback:")
+				traceback.print_exc()
+				return []
 			
 			if gen_result.is_err():
 				error = gen_result.unwrap_err()
-				print(f"❌ LLM generation error: {error}")
+				print(f"❌ LLM GENERATION ERROR: {error}")
 				print(f"🔍 DEBUG: Error type: {type(error)}")
+				print(f"🔍 DEBUG: Error string representation: {str(error)}")
+				print(f"🔍 DEBUG: Error args: {error.args if hasattr(error, 'args') else 'No args'}")
+				print(f"🔍 DEBUG: Full error details: {repr(error)}")
 				return []
 			
 			llm_response = gen_result.unwrap()
 			print(f"📥 Received LLM response ({len(llm_response)} characters)")
+			print(f"🔍 DEBUG: LLM response type: {type(llm_response)}")
 			print(f"🔍 DEBUG: LLM response preview: {llm_response[:300]}...")
+			print(f"🔍 DEBUG: Full LLM response for analysis:")
+			print(f"🔍 DEBUG: {llm_response}")
 			
-			# Parse JSON response
+			# Parse JSON response with detailed error handling
 			print(f"🔍 DEBUG: About to parse LLM response...")
-			betting_decisions = self._parse_llm_betting_response(llm_response, games_data)
-			print(f"🔍 DEBUG: Parsed {len(betting_decisions) if betting_decisions else 0} decisions")
+			try:
+				betting_decisions = self._parse_llm_betting_response(llm_response, games_data)
+				print(f"🔍 DEBUG: Parsed {len(betting_decisions) if betting_decisions else 0} decisions")
+			except Exception as parse_error:
+				print(f"❌ PARSE ERROR: Failed to parse LLM response")
+				print(f"🔍 DEBUG: Parse error type: {type(parse_error)}")
+				print(f"🔍 DEBUG: Parse error message: {str(parse_error)}")
+				print(f"🔍 DEBUG: Parse error args: {parse_error.args}")
+				print(f"🔍 DEBUG: Raw LLM response that failed to parse:")
+				print(f"🔍 DEBUG: {llm_response}")
+				import traceback
+				print(f"🔍 DEBUG: Parse error traceback:")
+				traceback.print_exc()
+				return []
 			
 			if betting_decisions:
 				print(f"✅ TRANSLATOR SUCCESS: Parsed {len(betting_decisions)} betting decisions from LLM")
@@ -2024,13 +1739,49 @@ class BettingAgent:
 				print("❌ TRANSLATOR FAILED: Could not parse betting decisions from LLM response")
 				print(f"🔍 DEBUG: Raw LLM response for analysis:")
 				print(f"🔍 DEBUG: {llm_response}")
+				print(f"🔍 DEBUG: Response length: {len(llm_response)}")
+				print(f"🔍 DEBUG: Response is empty: {not llm_response}")
+				print(f"🔍 DEBUG: Response is None: {llm_response is None}")
 				return []
 				
 		except Exception as e:
 			print(f"❌ TRANSLATOR ERROR: {e}")
+			print(f"🔍 DEBUG: Error type: {type(e)}")
+			print(f"🔍 DEBUG: Error string representation: {str(e)}")
+			print(f"🔍 DEBUG: Error args: {e.args}")
+			print(f"🔍 DEBUG: Full error details: {repr(e)}")
+			print(f"🔍 DEBUG: Error module: {e.__class__.__module__}")
+			print(f"🔍 DEBUG: Error class name: {e.__class__.__name__}")
+			print(f"🔍 DEBUG: Error docstring: {e.__class__.__doc__}")
+			
+			# Enhanced error context
+			print(f"🔍 DEBUG: Master prompt length: {len(master_prompt) if 'master_prompt' in locals() else 'N/A'}")
+			print(f"🔍 DEBUG: Games data count: {len(games_data) if 'games_data' in locals() else 'N/A'}")
+			print(f"🔍 DEBUG: Genner object: {self.genner if hasattr(self, 'genner') else 'N/A'}")
+			print(f"🔍 DEBUG: Genner type: {type(self.genner) if hasattr(self, 'genner') and self.genner else 'N/A'}")
+			
+			# Check if we have any LLM response data
+			if 'llm_response' in locals():
+				print(f"🔍 DEBUG: LLM response available: {llm_response[:500]}...")
+			else:
+				print(f"🔍 DEBUG: No LLM response captured")
+			
+			# Check if we have any gen_result data
+			if 'gen_result' in locals():
+				print(f"🔍 DEBUG: Gen result available: {gen_result}")
+				if hasattr(gen_result, 'is_err') and gen_result.is_err():
+					print(f"🔍 DEBUG: Gen result is error: {gen_result.unwrap_err()}")
+			else:
+				print(f"🔍 DEBUG: No gen_result captured")
+			
 			import traceback
 			print(f"🔍 DEBUG: Full traceback:")
 			traceback.print_exc()
+			
+			# Additional context for debugging
+			print(f"🔍 DEBUG: Current time: {__import__('datetime').datetime.now()}")
+			print(f"🔍 DEBUG: Python version: {__import__('sys').version}")
+			
 			return []
 
 	def _parse_llm_betting_response(self, llm_response: str, games_data: List[Dict]) -> List[Dict]:
@@ -2173,9 +1924,29 @@ class BettingAgent:
 			
 		except json.JSONDecodeError as e:
 			print(f"❌ JSON parsing error: {e}")
+			print(f"🔍 DEBUG: JSON error details: {e.msg}")
+			print(f"🔍 DEBUG: JSON error position: {e.pos}")
+			print(f"🔍 DEBUG: JSON error line: {e.lineno}")
+			print(f"🔍 DEBUG: JSON error column: {e.colno}")
+			print(f"🔍 DEBUG: Raw LLM response that failed JSON parsing:")
+			print(f"🔍 DEBUG: {llm_response}")
+			print(f"🔍 DEBUG: Response length: {len(llm_response)}")
+			print(f"🔍 DEBUG: Response type: {type(llm_response)}")
 			return []
 		except Exception as e:
 			print(f"❌ Response parsing error: {e}")
+			print(f"🔍 DEBUG: Error type: {type(e)}")
+			print(f"🔍 DEBUG: Error string representation: {str(e)}")
+			print(f"🔍 DEBUG: Error args: {e.args}")
+			print(f"🔍 DEBUG: Full error details: {repr(e)}")
+			print(f"🔍 DEBUG: Raw LLM response that failed parsing:")
+			print(f"🔍 DEBUG: {llm_response}")
+			print(f"🔍 DEBUG: Response length: {len(llm_response)}")
+			print(f"🔍 DEBUG: Response type: {type(llm_response)}")
+			print(f"🔍 DEBUG: Games data count: {len(games_data)}")
+			import traceback
+			print(f"🔍 DEBUG: Full traceback:")
+			traceback.print_exc()
 			return []
 
 	def save_recommendations_to_db(self, recommendations: List[Dict]) -> bool:
@@ -2361,32 +2132,72 @@ class BettingAgent:
 				print("❌ Database not available for outcome updates")
 				return
 			
+			if not self.overtime_service:
+				print("❌ OvertimeService not available for market result checking")
+				return
+			
 			import sqlite3
 			with sqlite3.connect(self.db.db_path) as conn:
 				cursor = conn.cursor()
 				
-				# Get open manual executions
+				# Get open manual executions with position information from recommendations
 				cursor.execute("""
-					SELECT market_id, executed_amount, user_notes, executed_at
-					FROM manual_executions 
-					WHERE user_notes LIKE '%Open%' AND status = 'executed'
+					SELECT me.id, me.market_id, me.executed_amount, me.user_notes, me.executed_at, ar.position
+					FROM manual_executions me
+					JOIN agent_recommendations ar ON me.market_id = ar.market_id
+					WHERE me.user_notes LIKE '%Open%' AND me.status = 'executed'
 				""")
 				
 				open_executions = cursor.fetchall()
 				print(f"📊 Found {len(open_executions)} open manual executions to check")
 				
-				for market_id, amount, notes, exec_time in open_executions:
-					# TODO: Check market outcome via Overtime API
-					# This would involve:
-					# 1. Query market status from Overtime Sports AMM
-					# 2. Determine if the bet won or lost
-					# 3. Update manual_executions table with outcome
-					# 4. Calculate actual P&L
+				updated_count = 0
+				for exec_id, market_id, amount, notes, exec_time, position in open_executions:
+					print(f"   📋 Checking outcome for market {market_id[:16]}...")
 					
-					print(f"   📋 Checking outcome for market {market_id[:16]}... (pending)")
+					try:
+						# Get market result from Overtime API
+						market_result = self.overtime_service.get_market_result(market_id)
+						
+						if market_result and 'winning_position' in market_result:
+							winning_position = market_result['winning_position']
+							
+							# Determine if bet won or lost
+							if winning_position == position:
+								# Bet won
+								status = "won"
+								# Calculate P&L: amount * (odds - 1) for winning bet
+								# For now, we'll use a simple 2x multiplier (100% profit)
+								# In real implementation, this should use actual odds
+								actual_pnl = float(amount) * 1.0  # 100% profit
+								new_notes = f"Won - Position {position} matched winning position {winning_position} - P&L: +{actual_pnl:.2f}"
+								print(f"      ✅ WON! Position {position} matched winning position {winning_position}")
+							else:
+								# Bet lost
+								status = "lost"
+								actual_pnl = -float(amount)  # Lost the entire bet amount
+								new_notes = f"Lost - Position {position} did not match winning position {winning_position} - P&L: {actual_pnl:.2f}"
+								print(f"      ❌ LOST! Position {position} did not match winning position {winning_position}")
+							
+							# Update the manual execution record
+							cursor.execute("""
+								UPDATE manual_executions 
+								SET user_notes = ?, status = ?, profit_loss = ?, updated_at = CURRENT_TIMESTAMP
+								WHERE id = ?
+							""", (new_notes, status, actual_pnl, exec_id))
+							
+							updated_count += 1
+							print(f"      📝 Updated execution {exec_id} with {status} status")
+							
+						else:
+							print(f"      ⏳ Market {market_id[:16]} not resolved yet or no result available")
+							
+					except Exception as e:
+						print(f"      ❌ Error checking market {market_id[:16]}: {e}")
+						continue
 				
-				# For now, detect resolved markets from user feedback
-				# Later: implement automatic market resolution checking
+				conn.commit()
+				print(f"✅ Successfully updated {updated_count} manual bet outcomes")
 				
 		except Exception as e:
 			print(f"❌ Error updating manual bet outcomes: {e}")
@@ -2598,11 +2409,74 @@ class BettingAgent:
 			print(f"❌ Error saving combo recommendation: {e}")
 			return False
 
+	
+	def _execute_onchain_bet(self, decision: Dict):
+		"""Executes a single bet on-chain using the full Quote-to-Trade pipeline."""
+		self.logger.info(f"--- ⛓️ GRAND INTEGRATION: EXECUTING ON-CHAIN BET for {decision.get('teams')} ---")
+		try:
+			# --- SETUP ---
+			w3 = Web3(Web3.HTTPProvider(os.getenv('ARBITRUM_RPC_URL')))
+			account = w3.eth.account.from_key(os.getenv('PRIVATE_KEY'))
+			api_key = os.getenv('OVERTIME_REST_API_KEY')
+			usdc_address = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' # DEFINITIVE FIX: Hardcoded Native USDC Address
+			sports_amm_address = os.getenv('SPORTS_AMM_ADDRESS') # Now using the correct, verified address from .env
+
+			# --- BET PARAMETERS ---
+			market_id = decision.get('market_id')
+			position = decision.get('position')
+			buy_in_amount_usd = decision.get('recommended_amount')
+			
+			# --- STEP 1: GET MARKET & QUOTE FROM API ---
+			self.logger.info("   - Step 1: Fetching Market Data and Quote from Overtime API...")
+			market_url = f"https://api.overtime.io/overtime-v2/networks/42161/markets/{market_id}"
+			market = requests.get(market_url, headers={"x-api-key": api_key}).json()
+
+			trade_data_for_quote = [{"gameId": market['gameId'],"sportId": market['subLeagueId'],"typeId": market['typeId'],"maturity": market['maturity'],"status": market['status'],"line": market['line'],"playerId": market['playerProps']['playerId'],"odds": [o['normalizedImplied'] for o in market['odds']],"merkleProof": market['proof'],"position": position,"combinedPositions": market['combinedPositions'],"live": False}]
+			
+			quote_url = "https://api.overtime.io/overtime-v2/networks/42161/quote"
+			quote_payload = {"buyInAmount": buy_in_amount_usd, "tradeData": trade_data_for_quote, "collateral": "USDC"}
+			quote = requests.post(quote_url, headers={"x-api-key": api_key}, json=quote_payload).json()
+			self.logger.info("   - ✅ Quote received successfully.")
+
+			# --- STEP 2: APPROVE USDC ---
+			self.logger.info("   - Step 2: Approving USDC for Trade...")
+			buy_in_amount_wei = int(buy_in_amount_usd * (10**6))
+			usdc_contract = w3.eth.contract(address=w3.to_checksum_address(usdc_address), abi='[{"constant":false,"inputs":[{"name":"_spender","type":"address"},{"name":"_value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"type":"function"}]')
+			approve_tx = usdc_contract.functions.approve(sports_amm_address, buy_in_amount_wei).build_transaction({'from': account.address, 'nonce': w3.eth.get_transaction_count(account.address)})
+			signed_approve = w3.eth.account.sign_transaction(approve_tx, os.getenv('PRIVATE_KEY')); approve_hash = w3.eth.send_raw_transaction(signed_approve.raw_transaction)
+			w3.eth.wait_for_transaction_receipt(approve_hash)
+			self.logger.info(f"   - ✅ Approval Confirmed: {approve_hash.hex()}")
+			time.sleep(15)
+
+			# --- STEP 3: EXECUTE TRADE ---
+			self.logger.info("   - Step 3: Executing TRADE on Arbitrum with Quote Data...")
+			sports_amm = w3.eth.contract(address=w3.to_checksum_address(sports_amm_address), abi=OVERTIME_SPORTS_AMM_ABI)
+			
+			trade_data_for_contract = [{"gameId": market['gameId'],"sportId": market['subLeagueId'],"typeId": market['typeId'],"maturity": market['maturity'],"status": market['status'],"line": int(market['line'] * 100),"playerId": market['playerProps']['playerId'],"odds": [w3.to_wei(o['normalizedImplied'], 'ether') for o in market['odds']],"merkleProof": market['proof'],"position": position,"combinedPositions": market['combinedPositions'],"live": False}]
+			total_quote = w3.to_wei(quote['quoteData']['totalQuote']['normalizedImplied'], 'ether')
+			
+			trade_tx = sports_amm.functions.trade(trade_data_for_contract, buy_in_amount_wei, total_quote, w3.to_wei(0.02, 'ether'), '0x0000000000000000000000000000000000000000', w3.to_checksum_address(usdc_address), False).build_transaction({'from': account.address, 'nonce': w3.eth.get_transaction_count(account.address)})
+			
+			signed_trade = w3.eth.account.sign_transaction(trade_tx, os.getenv('PRIVATE_KEY')); trade_hash = w3.eth.send_raw_transaction(signed_trade.raw_transaction)
+			self.logger.info(f"   - ✅ Trade TX sent! Hash: {trade_hash.hex()}")
+			receipt = w3.eth.wait_for_transaction_receipt(trade_hash, timeout=120)
+			
+			if receipt.status == 1:
+				self.logger.info(f"   - 🎉🎉🎉 VICTORY! Autonomous USDC bet CONFIRMED on ARBITRUM!")
+				return {"success": True, "tx_hash": trade_hash.hex()}
+			else:
+				self.logger.error(f"   - ⚠️ Trade transaction FAILED on-chain. Status: {receipt.status}")
+				return {"success": False, "error": "Transaction failed on-chain"}
+		except Exception as e:
+			self.logger.error(f"   - ❌ FAILED to execute full trade pipeline: {e}")
+			return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
-	# Αυτός ο κώδικας είναι προσωρινός, μόνο για τη δοκιμή
+	# This code is temporary, for testing only
 	print("--- Initializing Test Run ---")
 
-	# Προσωρινή άμεση κλήση στο service για επαλήθευση
+	# Temporary direct call to service for verification
 	overtime = OvertimeService()
 	markets = overtime.get_sports_data()
 	if markets:

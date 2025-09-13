@@ -25,6 +25,7 @@ from flask_cors import CORS
 import requests
 from dataclasses import dataclass
 import glob
+from web3 import Web3
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -37,6 +38,25 @@ CORS(app, resources={r"/api/*": {"origins": "*"}})
 DATABASE_PATH = "/app/agent/db/superior-agents.db"  # Force absolute path
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8080")
 ARBITRUM_RPC_URL = os.getenv("ARBITRUM_RPC_URL", "https://arb1.arbitrum.io/rpc")
+
+def get_eth_price():
+    """Get current ETH price from CoinGecko"""
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=ethereum&vs_currencies=usd"
+        response = requests.get(url)
+        response.raise_for_status()
+        price_data = response.json()
+        return price_data['ethereum']['usd']
+    except Exception:
+        return 3500.0  # Fallback
+
+def get_eth_balance(w3, wallet_address):
+    """Get ETH balance for wallet address"""
+    try:
+        raw_balance = w3.eth.get_balance(w3.to_checksum_address(wallet_address))
+        return w3.from_wei(raw_balance, 'ether')
+    except Exception:
+        return 0.0
 
 def get_recommendations_by_cycle():
     """Get recommendations grouped by cycle/timestamp"""
@@ -111,7 +131,7 @@ def get_recommendations_by_cycle():
         return []
 
 # USDC.e contract address on Arbitrum
-USDC_ADDRESS = '0xFF970A61A04b1cA14834A43f5dE4533eBDDB5CC8'
+USDC_ADDRESS = '0xaf88d065e77c8cC2239327C5EDb3A432268e5831' # DEFINITIVE FIX: Hardcoded Native USDC Address
 
 @dataclass
 class BetData:
@@ -353,6 +373,38 @@ class WalletManager:
 db_manager = DatabaseManager(DATABASE_PATH)
 rag_manager = RAGManager(RAG_SERVICE_URL)
 wallet_manager = WalletManager()
+
+@app.route('/api/wallet-status', methods=['GET'])
+def get_wallet_status():
+    """Get live wallet status with ETH balance and USD value"""
+    try:
+        rpc_url = os.getenv('ARBITRUM_RPC_URL')
+        wallet_address = os.getenv('WALLET_ADDRESS')
+        
+        if not rpc_url or not wallet_address:
+            return jsonify({"error": "Wallet or RPC not configured"}), 500
+
+        w3 = Web3(Web3.HTTPProvider(rpc_url))
+        if not w3.is_connected():
+            return jsonify({"error": "Could not connect to Arbitrum"}), 500
+        
+        eth_balance = get_eth_balance(w3, wallet_address)
+        eth_usd_price = get_eth_price()
+        wallet_usd_value = float(eth_balance) * eth_usd_price
+        
+        # Gas Reserve Logic (copy from agent)
+        gas_reserve_eth = 0.002
+        available_eth = float(eth_balance) - gas_reserve_eth
+        available_usd = available_eth * eth_usd_price
+
+        return jsonify({
+            "eth_balance": f"{float(eth_balance):.8f}",
+            "wallet_usd_value": f"{wallet_usd_value:.2f}",
+            "available_for_betting_usd": f"{max(0, available_usd):.2f}"
+        })
+    except Exception as e:
+        logger.error(f"Error getting wallet status: {e}")
+        return jsonify({"error": "Failed to get wallet status"}), 500
 
 @app.route('/api/bets', methods=['GET'])
 def get_bets():
@@ -929,6 +981,21 @@ def agent_control():
     
     # GET request returns current state
     return jsonify(agent_control_state)
+
+@app.route('/api/recommendations/<int:rec_id>/dismiss', methods=['POST'])
+def dismiss_recommendation(rec_id):
+    try:
+        conn = get_db_connection()
+        conn.execute("UPDATE agent_recommendations SET status = 'dismissed' WHERE id = ?", (rec_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True, "message": f"Recommendation {rec_id} dismissed."})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+def get_db_connection():
+    """Get database connection"""
+    return sqlite3.connect(DATABASE_PATH)
 
 if __name__ == '__main__':
     print("Starting Superior Agents Dashboard API...")

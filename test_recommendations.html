@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Recommendations</title>
+</head>
+<body>
+    <h1>Test Recommendations Loading</h1>
+    <div id="result"></div>
+    
+    <script>
+    console.log('Starting test...');
+    
+    async function testRecommendations() {
+        try {
+            console.log('Fetching from /api/recommendations...');
+            const response = await fetch('/api/recommendations');
+            console.log('Response status:', response.status);
+            
+            const data = await response.json();
+            console.log('Data received:', data);
+            
+            const container = document.getElementById('result');
+            if (data.status === 'success' && data.recommendations) {
+                container.innerHTML = `
+                    <h2>Success! Found ${data.recommendations.length} recommendations:</h2>
+                    <ul>
+                        ${data.recommendations.map(rec => `
+                            <li>${rec.teams} - $${rec.recommended_amount} (${rec.position_name})</li>
+                        `).join('')}
+                    </ul>
+                `;
+            } else {
+                container.innerHTML = `<h2>Error: ${JSON.stringify(data)}</h2>`;
+            }
+        } catch (error) {
+            console.error('Error:', error);
+            document.getElementById('result').innerHTML = `<h2>Error: ${error.message}</h2>`;
+        }
+    }
+    
+    // Test immediately
+    testRecommendations();
+    </script>
+</body>
+</html>

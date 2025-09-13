@@ -1,0 +1,5 @@
+Germany vs Finland|2.63|0.5|pending_manual_execution
+TSG Hawks vs Fubon Guardians|2.63|0.5|pending_manual_execution
+Harold Mayot vs Clement Chidekh|2.63|0.5|pending_manual_execution
+Wigan Warriors vs Castleford Tigers|2.63|0.5|pending_manual_execution
+Monopoli Calcio 1966 vs SS Audace Cerignola|2.69|0.5|pending_manual_execution

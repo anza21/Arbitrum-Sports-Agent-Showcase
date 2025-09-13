@@ -1,7 +1,6 @@
 import sys
 import os
 import asyncio
-import time
 
 # Add the project root to the Python path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -80,24 +79,6 @@ async def main():
         
     print("--- Agent Initialized ---")
     
-    # --- DEFINITIVE FIX: Initialize cycle and ETH balance before starting the loop ---
-    print("🔧 INITIALIZING ETH BALANCE CHECK...")
-    try:
-        from web3 import Web3
-        w3 = Web3(Web3.HTTPProvider(os.getenv('ARBITRUM_RPC_URL')))
-        wallet_addr = os.getenv('WALLET_ADDRESS')
-        if w3.is_connected() and wallet_addr:
-            eth_raw_balance = w3.eth.get_balance(w3.to_checksum_address(wallet_addr))
-            eth_balance = w3.from_wei(eth_raw_balance, 'ether')
-            agent.eth_balance = float(eth_balance)
-            print(f"✅ INITIAL ETH BALANCE: {agent.eth_balance:.8f} ETH")
-        else:
-            print("❌ Failed to connect to RPC or get wallet address")
-            agent.eth_balance = 0.0
-    except Exception as e:
-        print(f"❌ Error in initial ETH balance check: {e}")
-        agent.eth_balance = 0.0
-    
     while True:
         cycle_id = agent.record_cycle_start()
         print(f"--- Starting Agent Cycle: {cycle_id} ---")
@@ -111,25 +92,21 @@ async def main():
             betting_decisions = agent.formulate_betting_strategy(enriched_games)
             
             if betting_decisions:
-                # Use the live USDC balance that was successfully initialized at startup
-                final_decisions = agent.manage_bankroll(betting_decisions, agent.usdc_balance)
+                wallet_balance = wallet_service.get_usdc_balance(wallet_address) if wallet_address else 0
+                final_decisions = agent.manage_bankroll(betting_decisions, wallet_balance)
                 
-                # Always save recommendations to database for dashboard access
-                print("--- SAVING RECOMMENDATIONS TO DATABASE ---")
-                agent.save_recommendations_to_db(final_decisions)
-                
-                # On-chain execution disabled. Reverting to manual mode.
-                # if os.getenv("EXECUTE_ON_CHAIN") != "ANALYSIS_ONLY":
-                #     print("--- ATTEMPTING TO EXECUTE BETS ON-CHAIN ---")
-                #     for decision in final_decisions:
-                #         result = agent._execute_onchain_bet(decision)
-                #         if result.get("success"):
-                #             print(f"✅ On-chain bet executed successfully: {result.get('tx_hash')}")
-                #         else:
-                #             print(f"❌ On-chain bet failed: {result.get('error')}")
-                #         time.sleep(5)  # Add a small delay between transactions
-                # else:
-                print("--- UPGRADED MANUAL MODE: ETH-AWARE RECOMMENDATIONS SAVED FOR MANUAL EXECUTION ---")
+                if os.getenv("EXECUTE_ON_CHAIN") != "ANALYSIS_ONLY":
+                    betting_code = agent.generate_betting_code(final_decisions)
+                    if betting_code and container_manager:
+                        result = container_manager.run_code_in_con(betting_code, "betting")
+                        if result.is_ok():
+                            output, _ = result.unwrap()
+                            print(f"--- Betting code execution result: {output} ---")
+                        else:
+                            print(f"--- Betting code execution failed: {result.unwrap_err()} ---")
+                else:
+                    print("--- ANALYSIS-ONLY MODE: SAVING RECOMMENDATIONS FOR MANUAL EXECUTION ---")
+                    agent.save_recommendations_to_db(final_decisions)
             else:
                 print("--- No betting decisions generated. Ending cycle. ---")
                 final_decisions = []
@@ -141,41 +118,7 @@ async def main():
             agent.record_cycle_end(cycle_id, 0, 0)
 
         print("--- CYCLE COMPLETE. Agent sleeping until next scheduled time. ---")
-        
-        from datetime import datetime, timedelta, timezone
-
-        # Define Greece timezone
-        greece_tz = timezone(timedelta(hours=3))
-        
-        utc_now = datetime.now(timezone.utc)
-        greece_now = utc_now.astimezone(greece_tz)
-        
-        # Calculate next run time (closest 06:00, 14:00, 22:00 Greece time)
-        now_hour_greece = greece_now.hour
-        if 6 <= now_hour_greece < 14:
-            next_run_hour_greece = 14
-            next_run_greece = greece_now.replace(hour=next_run_hour_greece, minute=0, second=0, microsecond=0)
-        elif 14 <= now_hour_greece < 22:
-            next_run_hour_greece = 22
-            next_run_greece = greece_now.replace(hour=next_run_hour_greece, minute=0, second=0, microsecond=0)
-        else: # After 22:00 or before 06:00
-            next_run_hour_greece = 6
-            if now_hour_greece >= 22:  # After 22:00, go to next day
-                next_day_greece = greece_now + timedelta(days=1)
-                next_run_greece = next_day_greece.replace(hour=next_run_hour_greece, minute=0, second=0, microsecond=0)
-            else:  # Before 06:00, go to same day
-                next_run_greece = greece_now.replace(hour=next_run_hour_greece, minute=0, second=0, microsecond=0)
-        next_run_utc = next_run_greece.astimezone(timezone.utc)
-        
-        sleep_duration_seconds = (next_run_utc - utc_now).total_seconds()
-        
-        print(f"🌍 Current UTC time: {utc_now.strftime('%Y-%m-%d %H:%M:%S')} UTC")
-        print(f"🇬🇷 Current Greece time: {greece_now.strftime('%Y-%m-%d %H:%M:%S')} (UTC+3)")
-        print(f"⏰ Next cycle: {next_run_utc.strftime('%Y-%m-%d %H:%M:%S')} UTC = {next_run_greece.strftime('%Y-%m-%d %H:%M:%S')} Greece time")
-        print(f"⏱️  Sleep duration: {sleep_duration_seconds / 3600:.1f} hours")
-        
-        time.sleep(sleep_duration_seconds)
-
+        time.sleep(8 * 60 * 60)
 
 if __name__ == "__main__":
     asyncio.run(main())

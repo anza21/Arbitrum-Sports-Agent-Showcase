@@ -1,0 +1,102 @@
+* 8a3f365 - (HEAD -> feature/intelligence-upgrade, origin/feature/intelligence-upgrade) feat(agent): Integrate TheOddsService into BettingAgent (35 hours ago) <anza21>
+* 894d8a1 - fix(agent): Correct Overtime API data parsing and add filtering for active markets (2 days ago) <anza21>
+* 3618017 - refactor(agent): Re-implement all core business logic methods (2 days ago) <anza21>
+* 0b25a2d - feat(agent): Integrate Weather and Geolocation services (2 days ago) <anza21>
+* 745644e - feat(service): Add global league coverage and smart quota management (test mode) (2 days ago) <anza21>
+* c99167e - feat(agent): Integrate TheOddsService into BettingAgent (2 days ago) <anza21>
+* ed2be27 - feat(agent): Rebuild v4.0 - Integrate OvertimeService into clean BettingAgent (2 days ago) <anza21>
+* 85a1c81 - refactor(agent): Rebuild v3.0 - Surgically remove legacy trading methods from BettingAgent (2 days ago) <anza21>
+* 0734098 - (tag: v1.0.0-baseline) chore: Stable baseline before intelligence upgrade (Report 118 confirmed) (6 days ago) <anza21>
+* 9515afa - feat(rag-api): Add /health endpoint for Docker healthcheck (7 days ago) <anza21>
+* 7904296 - fix(agent): Add RAG query methods and feedback test logic (7 days ago) <anza21>
+* 5d5a0d1 - test(agent): Add dedicated test script for feedback loop (7 days ago) <anza21>
+* 85cb1a3 - feat(agent): Implement feedback loop for updating bet results in RAG (7 days ago) <anza21>
+* 6b7d526 - feat(service): Add functionality to fetch resolved market results (7 days ago) <anza21>
+* 87c56f6 - feat(agent): Finalize and verify tuned prompt for decisiveness (7 days ago) <anza21>
+* 269ee42 - feat(agent): Tune master prompt for increased decisiveness (7 days ago) <anza21>
+* e289921 - feat(agent): Upgrade strategy to v3.0 (Professional LLM Analyst) (7 days ago) <anza21>
+* 627e44e - feat(agent): Tune master prompt for increased decisiveness (7 days ago) <anza21>
+* 18827e1 - feat(agent): Upgrade strategy to v3.0 (LLM-driven) (7 days ago) <anza21>
+* 54f0a0c - fix(agent): Correctly populate StrategyData for RAG memory (10 days ago) <anza21>
+* f0c7666 - fix(agent): Add string escaping to prevent SyntaxError in generated code (10 days ago) <anza21>
+* d4e3801 - feat(agent): Implement infinite loop for continuous autonomous operation (10 days ago) <anza21>
+* d59babf - fix(agent): Fix syntax error in generated betting code - add newlines between statements (10 days ago) <anza21>
+* 8da89ce - refactor(agent): Revert strategy to production threshold before launch (10 days ago) <anza21>
+* 1502d54 - test(agent): Temporarily relax strategy threshold for RAG test (10 days ago) <anza21>
+* 7ed9ea6 - feat(agent): Implement RAG memory storage for betting decisions (10 days ago) <anza21>
+* 7a77dbf - feat(agent): Integrate Kelly Criterion for dynamic bankroll management (10 days ago) <anza21>
+* 48fec2d - feat(agent): Implement Kelly Criterion for dynamic bankroll management (10 days ago) <anza21>
+* b2cb632 - fix(service): Add checksum address conversion to WalletService (10 days ago) <anza21>
+* 5297af6 - feat(agent): Integrate WalletService into BettingAgent (10 days ago) <anza21>
+* 74075bc - feat(service): Create WalletService to check ETH and USDCe balances (10 days ago) <anza21>
+* c306689 - feat(agent): Integrate Overtime contract ABI for on-chain interaction (10 days ago) <anza21>
+* 052042d - fix(service): Add graceful handling for NewsAPI rate limiting (10 days ago) <anza21>
+* 843191b - fix(agent): Correct syntax for generated code string (10 days ago) <anza21>
+* 1d40596 - feat(system): Achieve first full end-to-end successful launch (11 days ago) <anza21>
+* 5a8c3c5 - test: Add isolation test script for ContainerManager (11 days ago) <anza21>
+* e367bb7 - feat(agent): Activate ContainerManager to execute generated code (11 days ago) <anza21>
+* 0067212 - feat(agent): Finalize and verify Strategy v2.0 (Odds + News) (11 days ago) <anza21>
+* 80501ad - feat(agent): Upgrade strategy to v2.0 with news analysis (11 days ago) <anza21>
+* 73b8f9c - feat(agent): Integrate NewsService into BettingAgent (11 days ago) <anza21>
+* 36ddb79 - feat(service): Create NewsService for fetching team-related news (11 days ago) <anza21>
+* 67fdd4e - feat(agent): Implement logic for generating betting code from decisions (11 days ago) <anza21>
+* a4d6329 - fix(agent): Correctly parse API response and handle non-null odds (11 days ago) <anza21>
+* 5cbe054 - feat(agent): Implement v1.0 strategy and decision-making logic (11 days ago) <anza21>
+* 9f9a76f - feat(agent): Add market data processing and structuring logic (11 days ago) <anza21>
+* 1b2b196 - fix(agent): Resolve API response data structure handling (11 days ago) <anza21>
+* a15c16e - refactor(agent)!: Surgically remove crypto logic and fix Docker socket (11 days ago) <anza21>
+* e2d404d - fix(agent): Οριστική διόρθωση PromptGenerator & ContainerManager initialization (11 days ago) <anza21>
+* 9ab92d7 - fix(agent): Correctly initialize PromptGenerator and ContainerManager (11 days ago) <anza21>
+* 8759c61 - fix(agent): Fully implement agent assembly in startup script (11 days ago) <anza21>
+* f16441a - feat(agent): Add market data processing and structuring logic (2 weeks ago) <anza21>
+* 294e9c1 - fix(service): Correctly send API key in OvertimeService requests (2 weeks ago) <anza21>
+* 37b7196 - fix(service): Update to new Overtime Protocol API endpoint (2 weeks ago) <anza21>
+* ef2c26c - fix(docker): Set network_mode to host for stable connectivity (2 weeks ago) <anza21>
+* c3cb157 - fix(system): Resolve DNS issue and RAG API import paths (2 weeks ago) <anza21>
+* 5596faf - feat(agent): Add startup script and full betting dependencies (2 weeks ago) <anza21>
+* c5d7d2f - feat(agent): Complete BettingAgent launch with all dependencies resolved (2 weeks ago) <anza21>
+* 2474f61 - fix(docker): Remove deprecated apt-key command from Dockerfile (2 weeks ago) <anza21>
+* 6365a09 - fix(docker): Add volume mount to grant container file access (2 weeks ago) <anza21>
+* 62ec6a5 - feat(main): Add and activate BettingAgent in main execution flow (2 weeks ago) <anza21>
+* ba14e86 - feat(agent): Integrate OvertimeService into BettingAgent (2 weeks ago) <anza21>
+* cf6c6e1 - feat(service): Create Overtime Protocol API service (2 weeks ago) <anza21>
+* d5aadbd - fix(agent): Restore core framework components (RAG, DB, Container) (2 weeks ago) <anza21>
+* dcd88b9 - refactor(agent): Restructure agent for sports data integration (2 weeks ago) <anza21>
+* e26d1d7 - feat(agent): Refine core prompts for BettingAgent (2 weeks ago) <anza21>
+* ab1c80f - feat: Scaffold BettingAgent structure from trading_agent template (2 weeks ago) <anza21>
+* 85c3137 - chore: release sa v2 (3 weeks ago) <Truong Ma Phi>
+* ca6cfb9 - chore: move all v1 to a different folder (3 weeks ago) <Truong Ma Phi>
+* 89b41fe - (origin/main) fix: module transfer not included in meta-swap-api (#40) (3 months ago) <Truong Ma Phi>
+* 078277e - chore: update prompt (#39) (3 months ago) <Truong Ma Phi>
+* c58ed71 - lint: apply lint to project (#38) (3 months ago) <Truong Ma Phi>
+* 9ace824 - chore: remove hardcoded eth address (#37) (3 months ago) <Truong Ma Phi>
+* d5008a8 - fix: update latest default trade prompt (#36) (3 months ago) <Truong Ma Phi>
+* 9e1d15e - chore: hardcode ether address (#35) (3 months ago) <Truong Ma Phi>
+* 890fc73 - chore: add quickstart envfile (#34) (3 months ago) <Truong Ma Phi>
+* dc00510 - Add quickstart guide and edit to run openai version (#33) (3 months ago) <Truong Ma Phi>
+* 24c3c18 - feat: allow minimal setup to run agent (#32) (3 months ago) <Truong Ma Phi>
+* 8ee8ec5 - Add mock, update code and docs for simpler setup (#31) (4 months ago) <Invidia19>
+* 15e74b7 - change url docs (5 months ago) <Invidia19>
+* f71e3ac - Update README.md (#27) (5 months ago) <theycallmeloki>
+* 7a302c6 - Update README.md (#29) (5 months ago) <Edward Tay>
+* 522ab05 - fix: update Twitter API integration (#24) (6 months ago) <Invidia19>
+* 8b8116f - Update .env.example (#25) (6 months ago) <theycallmeloki>
+* ee5862c - cleanup (#23) (6 months ago) <gudfit>
+* f7e25f5 - [WIP]: Opensource update v.0.0.5 (#22) (6 months ago) <gudfit>
+* 88c260c - rem fly.toml (#21) (6 months ago) <gudfit>
+* 1a8af4d - Update repo (#20) (6 months ago) <Invidia19>
+* 983fc42 - rm ca.pem (#19) (6 months ago) <gudfit>
+* 835f394 - [WIP]: Opensource update v.0.0.4_2 (#18) (6 months ago) <gudfit>
+* a36d762 - [WIP]: Opensource mini update v.0.0.4_1 (#17) (6 months ago) <gudfit>
+* 2703161 - Delete superior-agents.code-workspace (#16) (6 months ago) <gudfit>
+* a8cafe3 - [WIP]: Opensource update v.0.0.3 (#14) (6 months ago) <gudfit>
+* 42d14e8 - [WIP]: Opensource update v.0.0.2 (#13) (6 months ago) <gudfit>
+* edc9f3f - Opensource update (#12) (6 months ago) <gudfit>
+* 4679334 - [WIP] OS Update Documentation (#11) (6 months ago) <gudfit>
+* 8a4bca8 - Add issue templates for better community contributions Add standardized GitHub issue templates for: - Bug reports - Installation issues - Usage questions - Wiki documentation issues (#9) (6 months ago) <gudfit>
+* a0a514f - Update README.md (#5) (6 months ago) <theycallmeloki>
+* 6d6000f - Update README.md (6 months ago) <theycallmeloki>
+* 1d28d6a - Update README.md (#4) (6 months ago) <theycallmeloki>
+* ff75b23 - add gitbook link (#2) (6 months ago) <Invidia19>
+* d263414 - Create bootstrap.sh (#1) (6 months ago) <theycallmeloki>
+* e3d2672 - init (7 months ago) <Invidia19>

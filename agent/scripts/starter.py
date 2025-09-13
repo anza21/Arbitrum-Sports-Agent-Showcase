@@ -506,6 +506,10 @@ def start_betting_agent(
 	print("Betting Agent initialized successfully!")
 	print("Testing complete betting workflow...")
 	
+	# Initialize cycle and ETH balance
+	cycle_id = agent.record_cycle_start()
+	print(f"🔄 Started betting cycle: {cycle_id}")
+	
 	try:
 		sports_data = agent.get_sports_data()
 		if sports_data:
@@ -519,28 +523,24 @@ def start_betting_agent(
 				print(f"✅ Strategy formulated: {len(betting_decisions)} betting decisions made")
 				
 				# Apply bankroll management
-				wallet_balance = 1000.0  # Default for testing
-				managed_decisions = agent.manage_bankroll(betting_decisions, wallet_balance)
+				managed_decisions = agent.manage_bankroll(betting_decisions, agent.eth_balance)
 				print(f"✅ Bankroll management applied: {len(managed_decisions)} managed decisions")
 				
-				# Generate executable code
-				executable_code = agent.generate_betting_code(managed_decisions)
-				if executable_code:
-					print("✅ Executable code generated successfully")
+				# Save recommendations to database first
+				if agent.save_recommendations_to_db(managed_decisions):
+					print("✅ Recommendations saved to database")
 					
-					# Execute via ContainerManager
-					if agent.container_manager:
-						print("--- Handing code to ContainerManager for execution... ---")
-						try:
-							execution_result = agent.container_manager.run_code_in_con(executable_code, "trading_execution")
-							print("--- ContainerManager Execution Result: ---")
-							print(execution_result)
-						except Exception as e:
-							print(f"❌ ContainerManager execution failed: {e}")
-					else:
-						print("❌ ContainerManager not available")
+					# Execute bets directly on-chain
+					print("--- ATTEMPTING TO EXECUTE BETS ON-CHAIN ---")
+					for decision in managed_decisions:
+						result = agent._execute_onchain_bet(decision)
+						if result.get("success"):
+							print(f"✅ On-chain bet executed successfully: {result.get('tx_hash')}")
+						else:
+							print(f"❌ On-chain bet failed: {result.get('error')}")
+						time.sleep(5)  # Add a small delay between transactions
 				else:
-					print("❌ Failed to generate executable code")
+					print("❌ Failed to save recommendations to database")
 			else:
 				print("❌ Failed to formulate betting strategy")
 		else:
