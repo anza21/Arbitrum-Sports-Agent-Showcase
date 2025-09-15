@@ -1,0 +1,11 @@
+
+# Sensitive files to exclude
+*.env
+Report_*.txt
+*.db
+*.log
+__pycache__/
+*.pyc
+.idea/
+node_modules/
+
